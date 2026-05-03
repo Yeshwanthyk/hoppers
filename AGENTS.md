@@ -38,6 +38,9 @@ Use, in order:
 zig build test
 zig build lint
 zig build
+scripts/test-tmux-harness.sh
 ```
+
+For tmux/plugin behavior, read and follow `docs/tmux-harness.md`. If a human tmux action is not accessible to an AI agent programmatically, create a task and extend the harness before relying on manual testing.
 
 Only claim a command ran if tool output confirms it.

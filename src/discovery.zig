@@ -29,7 +29,7 @@ pub fn freeCockpitItems(allocator: std.mem.Allocator, items: []model.CockpitItem
 }
 
 fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.CockpitItem {
-    const kind = model.detectAgentKind(pane.current_command, pane.title);
+    const kind = model.detectAgentKind(pane.current_command, pane.start_command, pane.title);
     if (kind == .unknown) return null;
 
     const project = try projects.inferProject(allocator, pane.current_path);
@@ -78,7 +78,8 @@ test "builds cockpit from agent panes" {
         .window_id = "@1",
         .pane_id = "%1",
         .pane_pid = 1,
-        .current_command = "claude",
+        .current_command = "sleep",
+        .start_command = "exec -a claude sleep 600",
         .current_path = "/tmp/hoppers",
         .title = "Claude task",
     }};

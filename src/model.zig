@@ -26,14 +26,14 @@ pub const AgentStatus = enum {
     failed,
     stale,
 
-    pub fn icon(self: AgentStatus) []const u8 {
+    pub fn label(self: AgentStatus) []const u8 {
         return switch (self) {
-            .idle => "○",
-            .running => "●",
-            .waiting => "◉",
-            .done => "✓",
-            .failed => "✗",
-            .stale => "◇",
+            .idle => "idle",
+            .running => "running",
+            .waiting => "waiting",
+            .done => "done",
+            .failed => "failed",
+            .stale => "stale",
         };
     }
 };
@@ -51,6 +51,7 @@ pub const TmuxPane = struct {
     pane_id: []const u8,
     pane_pid: u32,
     current_command: []const u8,
+    start_command: []const u8,
     current_path: []const u8,
     title: []const u8,
 };
@@ -75,8 +76,8 @@ pub const CockpitItem = struct {
     agent: AgentInstance,
 };
 
-pub fn detectAgentKind(command: []const u8, title: []const u8) AgentKind {
-    const haystacks = [_][]const u8{ command, title };
+pub fn detectAgentKind(command: []const u8, start_command: []const u8, title: []const u8) AgentKind {
+    const haystacks = [_][]const u8{ command, start_command, title };
     for (haystacks) |haystack| {
         if (containsToken(haystack, "claude")) return .claude;
         if (containsToken(haystack, "codex")) return .codex;
@@ -95,7 +96,8 @@ fn containsToken(haystack: []const u8, token: []const u8) bool {
 }
 
 test "detects known agents" {
-    try std.testing.expectEqual(AgentKind.claude, detectAgentKind("claude", ""));
-    try std.testing.expectEqual(AgentKind.codex, detectAgentKind("node", "Codex task"));
-    try std.testing.expectEqual(AgentKind.unknown, detectAgentKind("zsh", "editor"));
+    try std.testing.expectEqual(AgentKind.claude, detectAgentKind("claude", "", ""));
+    try std.testing.expectEqual(AgentKind.codex, detectAgentKind("node", "", "Codex task"));
+    try std.testing.expectEqual(AgentKind.marvin, detectAgentKind("sleep", "exec -a marvin sleep 600", ""));
+    try std.testing.expectEqual(AgentKind.unknown, detectAgentKind("zsh", "", "editor"));
 }

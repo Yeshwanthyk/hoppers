@@ -20,14 +20,8 @@ pub fn renderSnapshot(writer: anytype, items: []const model.CockpitItem) !void {
             try writer.print("{s}\n", .{current_project});
         }
         try writer.print(
-            "  {d} {s} {s:<7} {s} · {s}\n",
-            .{
-                item.rank,
-                item.agent.status.icon(),
-                item.agent.kind.label(),
-                item.agent.status.icon(),
-                item.agent.title,
-            },
+            "  {d} {s:<7} {s:<7} - {s}\n",
+            .{ item.rank, item.agent.kind.label(), item.agent.status.label(), item.agent.title },
         );
     }
 }
@@ -86,7 +80,11 @@ pub const CockpitView = struct {
 
         var row: u16 = 0;
         writeText(surface, 0, row, "hoppers · project cockpit", .{ .bold = true });
-        row += 2;
+        row += 1;
+        var count_buf: [32]u8 = undefined;
+        const count_text = std.fmt.bufPrint(&count_buf, "agents: {d}", .{self.items.len}) catch "agents: ?";
+        writeText(surface, 0, row, count_text, .{ .dim = true });
+        row += 1;
 
         if (self.items.len == 0) {
             writeText(surface, 0, row, "No agent panes detected.", .{ .dim = true });
@@ -123,8 +121,8 @@ fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem) void {
     var buf: [256]u8 = undefined;
     const text = std.fmt.bufPrint(
         &buf,
-        "  {d} {s} {s:<7} {s} · {s}",
-        .{ item.rank, item.agent.status.icon(), item.agent.kind.label(), item.agent.status.icon(), item.agent.title },
+        "  {d} {s:<7} {s:<7} - {s}",
+        .{ item.rank, item.agent.kind.label(), item.agent.status.label(), item.agent.title },
     ) catch "  <render error>";
     writeText(surface, 0, row, text, .{});
 }

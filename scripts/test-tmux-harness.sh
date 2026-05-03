@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CASE="all"
+KEEP="${HOPPERS_TEST_KEEP:-0}"
+if [ "${1:-}" = "--case" ]; then
+  CASE="${2:?missing case name}"
+fi
+
+SOCK="hoppers-test-$$"
+SESSION="hoppers-test"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/hoppers-test.XXXXXX")"
+LOG="$TMP/hoppers-tmux.log"
+TMUX_ENV=""
+TMUX_SOCKET=""
+COUNT=0
+FAILED=0
+
+cleanup() {
+  if [ "$KEEP" != "1" ]; then
+    tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
+    rm -rf "$TMP"
+  else
+    echo "# keeping tmux socket $SOCK and tmp $TMP"
+  fi
+}
+trap cleanup EXIT
+
+ok() { COUNT=$((COUNT + 1)); echo "ok $COUNT $1"; }
+not_ok() { COUNT=$((COUNT + 1)); FAILED=1; echo "not ok $COUNT $1"; shift; for line in "$@"; do echo "# $line"; done; }
+contains() { printf '%s' "$1" | grep -Fq "$2"; }
+not_contains() { ! printf '%s' "$1" | grep -Fq "$2"; }
+
+run_checked() {
+  local label="$1"; shift
+  if "$@" >"$TMP/$label.out" 2>"$TMP/$label.err"; then
+    ok "$label"
+  else
+    not_ok "$label" "$(cat "$TMP/$label.err")"
+  fi
+}
+
+build() {
+  run_checked build zig build
+}
+
+start_tmux() {
+  tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
+  : > "$TMP/panes.env"
+  tmux -L "$SOCK" -f /dev/null new-session -d -s "$SESSION" -n main -c "$ROOT" 'exec zsh'
+  TMUX_SOCKET="$(tmux -L "$SOCK" display-message -p '#{socket_path}')"
+  TMUX_ENV="$TMUX_SOCKET,0,0"
+  tmux -L "$SOCK" set-environment -g HOPPERS_TMUX_LOG "$LOG"
+}
+
+spawn_agent() {
+  local name="$1"
+  local title="$2"
+  local dir="$TMP/$name-project"
+  local agent_session="hoppers-$name"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  tmux -L "$SOCK" new-session -d -s "$agent_session" -c "$dir" "exec -a $name sleep 600"
+  local pane
+  pane="$(tmux -L "$SOCK" display-message -p -t "$agent_session":0.0 '#{pane_id}')"
+  tmux -L "$SOCK" select-pane -t "$pane" -T "$title"
+  printf '%s=%s\n' "$name" "$pane" >> "$TMP/panes.env"
+}
+
+setup_agents() {
+  start_tmux
+  spawn_agent claude 'Claude task'
+  spawn_agent codex 'Codex task'
+  spawn_agent pi 'Pi task'
+  spawn_agent marvin 'Marvin task'
+}
+
+snapshot_case() {
+  setup_agents
+  local output
+  output="$(HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" $ROOT/scripts/start.sh snapshot)"
+  contains "$output" 'hoppers · project cockpit' && ok 'snapshot header' || not_ok 'snapshot header' "$output"
+  contains "$output" 'claude' && ok 'snapshot detects claude' || not_ok 'snapshot detects claude' "$output"
+  contains "$output" 'codex' && ok 'snapshot detects codex' || not_ok 'snapshot detects codex' "$output"
+  not_contains "$output" '�' && ok 'snapshot has no replacement chars' || not_ok 'snapshot has no replacement chars' "$output"
+}
+
+plugin_case() {
+  start_tmux
+  if tmux -L "$SOCK" source-file "$ROOT/hoppers.tmux" >"$TMP/source.out" 2>"$TMP/source.err"; then
+    ok 'plugin sources'
+  else
+    not_ok 'plugin sources' "$(cat "$TMP/source.err")"
+    return
+  fi
+  local keys
+  sleep 1
+  keys="$(tmux -L "$SOCK" list-keys -T prefix h 2>/dev/null || true)"
+  contains "$keys" 'Hoppers sidebar' && ok 'plugin binds menu' || not_ok 'plugin binds menu' "$keys" "$(cat "$LOG" 2>/dev/null || true)"
+}
+
+sidebar_case() {
+  setup_agents
+  tmux -L "$SOCK" switch-client -t "$SESSION" 2>/dev/null || true
+  tmux -L "$SOCK" source-file "$ROOT/hoppers.tmux"
+  local target_window
+  target_window="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{window_id}')"
+  HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/toggle.sh" >"$LOG" 2>&1
+  sleep 2
+  local panes sidebar
+  panes="$(tmux -L "$SOCK" list-panes -t "$SESSION":main -F '#{pane_id}|#{pane_title}|#{pane_current_command}|#{pane_start_command}')"
+  sidebar="$(printf '%s\n' "$panes" | awk -F'|' '$2 == "hoppers-sidebar" || ($4 ~ /start\.sh/ && $4 ~ /sidebar/) { print $1; exit }')"
+  [ -n "$sidebar" ] && ok 'sidebar opens' || { not_ok 'sidebar opens' "$panes" "$(cat "$LOG" 2>/dev/null || true)"; return; }
+  sleep 4
+  tmux -L "$SOCK" list-panes -t "$SESSION":main -F '#{pane_id}' | grep -Fq "$sidebar" && ok 'sidebar stays alive' || not_ok 'sidebar stays alive' "$(cat "$LOG" 2>/dev/null || true)"
+  local capture
+  capture="$(tmux -L "$SOCK" capture-pane -p -t "$sidebar" -S -80)"
+  contains "$capture" 'hoppers · project cockpit' && ok 'sidebar header visible' || not_ok 'sidebar header visible' "$capture"
+  contains "$capture" 'claude' && ok 'sidebar detects claude' || not_ok 'sidebar detects claude' "$capture"
+  not_contains "$capture" '�' && ok 'sidebar has no replacement chars' || not_ok 'sidebar has no replacement chars' "$capture"
+}
+
+jump_case() {
+  setup_agents
+  local target
+  target="$(awk -F= '$1 == "marvin" { print $2 }' "$TMP/panes.env")"
+  if HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/start.sh" jump 1 >"$TMP/jump.out" 2>"$TMP/jump.err"; then
+    ok 'jump exits successfully'
+  else
+    not_ok 'jump exits successfully' "$(cat "$TMP/jump.err")"
+    return
+  fi
+  local active
+  active="$(tmux -L "$SOCK" display-message -p '#{pane_id}')"
+  [ "$active" = "$target" ] && ok 'jump selects ranked pane' || not_ok 'jump selects ranked pane' "active=$active target=$target"
+}
+
+case "$CASE" in
+  all) build; snapshot_case; plugin_case; sidebar_case; jump_case ;;
+  build) build ;;
+  snapshot) build; snapshot_case ;;
+  plugin) plugin_case ;;
+  sidebar) build; sidebar_case ;;
+  jump) build; jump_case ;;
+  *) echo "unknown case: $CASE" >&2; exit 2 ;;
+esac
+
+if [ "$FAILED" -ne 0 ]; then
+  echo "# failed; tmp=$TMP"
+  exit 1
+fi

@@ -2,6 +2,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const discovery = @import("discovery.zig");
 const tmux = @import("tmux.zig");
+const sanitize = @import("sanitize.zig");
 const tui = @import("tui.zig");
 
 const vxfw = vaxis.vxfw;
@@ -60,7 +61,6 @@ fn sidebar(allocator: std.mem.Allocator) !void {
     defer controller.freePanes(panes);
 
     const items = try discovery.buildCockpit(allocator, panes);
-
     var app = try vxfw.App.init(allocator);
     defer app.deinit();
 
@@ -101,6 +101,7 @@ fn usage(writer: anytype) !void {
 
 test {
     _ = discovery;
+    _ = sanitize;
     _ = tmux;
     _ = tui;
 }
