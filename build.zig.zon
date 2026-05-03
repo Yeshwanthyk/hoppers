@@ -1,0 +1,13 @@
+.{
+    .name = .hoppers,
+    .version = "0.0.1",
+    .dependencies = .{
+        .ziglint = .{
+            .url = "git+https://github.com/rockorager/ziglint?ref=main#bfcb30d14d5506940344096e4cf3b0c13b210439",
+            .hash = "ziglint-0.5.2-t0bwL097BQBk4rljFZ613CkTgWLXfU90OClKy6E6B3eh",
+        },
+    },
+    .minimum_zig_version = "0.15.2",
+    .paths = .{""},
+    .fingerprint = 0xd4631219bcd0f39e,
+}

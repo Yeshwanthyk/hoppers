@@ -1,0 +1,4 @@
+zig-out/
+.zig-cache/
+.pi/
+.DS_Store
