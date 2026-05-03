@@ -5,11 +5,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const vaxis_dep = b.dependency("vaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    exe_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
 
     const exe = b.addExecutable(.{
         .name = "hoppers",
@@ -29,6 +35,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
     const tests = b.addTest(.{ .root_module = test_mod });
 
     const test_step = b.step("test", "Run unit tests");

@@ -1,7 +1,10 @@
 const std = @import("std");
+const vaxis = @import("vaxis");
 const discovery = @import("discovery.zig");
 const tmux = @import("tmux.zig");
 const tui = @import("tui.zig");
+
+const vxfw = vaxis.vxfw;
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -52,12 +55,18 @@ fn snapshot(allocator: std.mem.Allocator) !void {
 }
 
 fn sidebar(allocator: std.mem.Allocator) !void {
-    while (true) {
-        try snapshot(allocator);
-        try std.fs.File.stdout().writeAll("\nrefreshing every 3s; close pane to exit\n");
-        std.Thread.sleep(3 * std.time.ns_per_s);
-        try std.fs.File.stdout().writeAll("\x1b[2J\x1b[H");
-    }
+    const controller = tmux.Controller.init(allocator);
+    const panes = try controller.listPanes();
+    defer controller.freePanes(panes);
+
+    const items = try discovery.buildCockpit(allocator, panes);
+
+    var app = try vxfw.App.init(allocator);
+    defer app.deinit();
+
+    var view: tui.CockpitView = .{ .allocator = allocator, .items = items };
+    defer view.deinit();
+    try app.run(view.widget(), .{});
 }
 
 fn jump(allocator: std.mem.Allocator, rank: usize) !void {
