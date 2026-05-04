@@ -42,6 +42,10 @@ pub const Project = struct {
     id: []const u8,
     name: []const u8,
     root: []const u8,
+    branch: []const u8 = "",
+    dirty: bool = false,
+    worktree: bool = false,
+    ports: []const u16 = &.{},
     pinned: bool = false,
 };
 

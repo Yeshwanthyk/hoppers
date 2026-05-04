@@ -39,8 +39,11 @@ fn buildCockpitItem(
     const kind = detector.detectPaneAgentKind(pane);
     if (kind == .unknown) return null;
 
-    const project = try projects.inferProject(allocator, pane.current_path);
+    var project = try projects.inferProject(allocator, pane.current_path);
     errdefer projects.freeProject(allocator, project);
+    const ports = try detector.detectPorts(pane.pane_pid);
+    allocator.free(project.ports);
+    project.ports = ports;
 
     const id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ kind.label(), pane.pane_id });
     errdefer allocator.free(id);
@@ -155,6 +158,25 @@ const PaneAgentDetector = struct {
         return .unknown;
     }
 
+    fn detectPorts(self: *PaneAgentDetector, root_pid: u32) ![]const u16 {
+        const processes = try self.loadProcesses();
+        var pids: std.ArrayList(u32) = .empty;
+        defer pids.deinit(self.allocator);
+        try pids.append(self.allocator, root_pid);
+        for (processes) |process| {
+            if (isDescendantProcess(processes, process, root_pid)) try pids.append(self.allocator, process.pid);
+        }
+        if (pids.items.len == 0) return self.allocator.alloc(u16, 0);
+
+        var pid_buf: [4096]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&pid_buf);
+        for (pids.items, 0..) |pid, index| {
+            if (index > 0) stream.writer().writeAll(",") catch break;
+            stream.writer().print("{d}", .{pid}) catch break;
+        }
+        return listListeningPorts(self.allocator, stream.getWritten()) catch self.allocator.alloc(u16, 0);
+    }
+
     fn loadProcesses(self: *PaneAgentDetector) ![]const ProcessInfo {
         if (self.processes) |processes| return processes;
         const result = try std.process.Child.run(.{
@@ -218,6 +240,43 @@ fn parentPid(processes: []const ProcessInfo, pid: u32) ?u32 {
         if (process.pid == pid) return process.ppid;
     }
     return null;
+}
+
+fn listListeningPorts(allocator: std.mem.Allocator, pids: []const u8) ![]const u16 {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fn", "-p", pids },
+        .max_output_bytes = 256 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .Exited or result.term.Exited != 0) return allocator.alloc(u16, 0);
+
+    var ports: std.ArrayList(u16) = .empty;
+    errdefer ports.deinit(allocator);
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const port = parseLsofPort(line) orelse continue;
+        if (!containsPort(ports.items, port)) try ports.append(allocator, port);
+    }
+    std.mem.sort(u16, ports.items, {}, std.sort.asc(u16));
+    return ports.toOwnedSlice(allocator);
+}
+
+fn parseLsofPort(line: []const u8) ?u16 {
+    if (line.len < 2 or line[0] != 'n') return null;
+    const colon = std.mem.lastIndexOfScalar(u8, line, ':') orelse return null;
+    var end = colon + 1;
+    while (end < line.len and std.ascii.isDigit(line[end])) end += 1;
+    if (end == colon + 1) return null;
+    return std.fmt.parseInt(u16, line[colon + 1 .. end], 10) catch null;
+}
+
+fn containsPort(ports: []const u16, port: u16) bool {
+    for (ports) |existing| {
+        if (existing == port) return true;
+    }
+    return false;
 }
 
 fn freeCockpitItem(allocator: std.mem.Allocator, item: model.CockpitItem) void {

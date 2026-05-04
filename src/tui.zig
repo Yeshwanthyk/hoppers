@@ -241,15 +241,23 @@ pub const CockpitView = struct {
         }
 
         var current_project: []const u8 = "";
+        var current_subgroup: []const u8 = "";
         var visible_items: usize = 0;
         for (self.items, 0..) |item, index| {
             if (!self.isVisible(item)) continue;
             visible_items += 1;
             if (!std.mem.eql(u8, current_project, item.project.name)) {
-                if (row + 2 >= content_bottom) break;
+                if (row + 3 >= content_bottom) break;
                 current_project = item.project.name;
+                current_subgroup = "";
                 const stats = projectStats(self.items[index..], current_project, self.filter);
-                row = writeProject(surface, row, current_project, stats);
+                row = writeProject(surface, row, item.project, stats);
+            }
+            if (!std.mem.eql(u8, current_subgroup, item.project.root)) {
+                if (row + 1 >= content_bottom) break;
+                current_subgroup = item.project.root;
+                writeSubgroup(surface, row, item.project);
+                row += 1;
             }
             if (row >= content_bottom) break;
             const selected = item.rank == self.selected_rank;
@@ -283,18 +291,34 @@ fn drawHeader(surface: vxfw.Surface, items: []const model.CockpitItem, filter: F
     return 2;
 }
 
-fn writeProject(surface: vxfw.Surface, row: u16, name: []const u8, stats: StatusCounts) u16 {
+fn writeProject(surface: vxfw.Surface, row: u16, project: model.Project, stats: StatusCounts) u16 {
     var next = row;
     if (next > 2) {
         drawRule(surface, next, theme.surface);
         next += 1;
     }
-    writeText(surface, 1, next, name, .{ .fg = theme.text, .bold = true });
+    writeText(surface, 1, next, project.name, .{ .fg = theme.text, .bold = true });
     var buf: [48]u8 = undefined;
     const heat = heatLabel(&buf, stats);
     if (heat.len > 0) writeRight(surface, next, heat, 1, subtleStyle());
 
     return next + 1;
+}
+
+fn writeSubgroup(surface: vxfw.Surface, row: u16, project: model.Project) void {
+    var buf: [96]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const writer = stream.writer();
+    if (project.branch.len > 0) {
+        writer.writeAll(project.branch) catch return;
+        if (project.dirty) writer.writeAll("*") catch return;
+        if (project.worktree) writer.writeAll(" wt") catch return;
+    } else {
+        writer.writeAll(std.fs.path.basename(project.root)) catch return;
+    }
+    for (project.ports) |port| writer.print(" :{d}", .{port}) catch return;
+    const text = stream.getWritten();
+    writeTextTruncated(surface, 3, row, text, surface.size.width - 4, subtleStyle());
 }
 
 fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected: bool) void {
