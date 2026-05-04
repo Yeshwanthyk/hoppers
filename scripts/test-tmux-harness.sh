@@ -16,6 +16,8 @@ TMUX_ENV=""
 TMUX_SOCKET=""
 COUNT=0
 FAILED=0
+SIDEBAR_PORT1=""
+SIDEBAR_PORT2=""
 
 cleanup() {
   if [ "$KEEP" != "1" ]; then
@@ -41,6 +43,10 @@ run_checked() {
   fi
 }
 
+free_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
 build() {
   run_checked build zig build
 }
@@ -58,15 +64,44 @@ start_tmux() {
 spawn_agent() {
   local name="$1"
   local title="$2"
-  local dir="$TMP/$name-project"
+  local dir="${3:-$TMP/$name-project}"
+  local port="${4:-}"
   local agent_session="hoppers-$name"
   mkdir -p "$dir"
-  git -C "$dir" init -q
-  tmux -L "$SOCK" new-session -d -s "$agent_session" -c "$dir" "exec -a $name sleep 600"
+  if [ ! -d "$dir/.git" ] && ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$dir" init -q
+  fi
+  git -C "$dir" checkout -B "${name}-branch" >/dev/null 2>&1 || true
+  printf '%s\n' "$name dirty" > "$dir/hoppers-dirty.txt"
+  if [ -n "$port" ]; then
+    tmux -L "$SOCK" new-session -d -s "$agent_session" -c "$dir" "exec bash -lc 'exec -a $name python3 -c '\''import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind((\"127.0.0.1\", $port)); s.listen(); time.sleep(600)'\'''"
+    local attempt
+    for attempt in {1..50}; do
+      lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && break
+      sleep 0.1
+    done
+  else
+    tmux -L "$SOCK" new-session -d -s "$agent_session" -c "$dir" "exec bash -lc 'exec -a $name sleep 600'"
+  fi
   local pane
   pane="$(tmux -L "$SOCK" display-message -p -t "$agent_session":0.0 '#{pane_id}')"
   tmux -L "$SOCK" select-pane -t "$pane" -T "$title"
   printf '%s=%s\n' "$name" "$pane" >> "$TMP/panes.env"
+}
+
+setup_shared_worktrees() {
+  local shared="$TMP/shared-project"
+  mkdir -p "$shared"
+  git -C "$shared" init -q
+  git -C "$shared" checkout -B shared-main >/dev/null 2>&1
+  git -C "$shared" config user.email hoppers@example.test
+  git -C "$shared" config user.name hoppers
+  printf 'base\n' > "$shared/README.md"
+  git -C "$shared" add README.md
+  git -C "$shared" commit -qm base
+  local worktree="$TMP/shared-worktree"
+  git -C "$shared" worktree add -q -b shared-worktree "$worktree"
+  printf '%s\n%s\n' "$shared" "$worktree"
 }
 
 setup_agents() {
@@ -75,6 +110,18 @@ setup_agents() {
   spawn_agent codex 'Codex task'
   spawn_agent pi 'Pi task'
   spawn_agent marvin 'Marvin task'
+}
+
+setup_sidebar_agents() {
+  start_tmux
+  local paths shared worktree
+  paths="$(setup_shared_worktrees)"
+  shared="$(printf '%s\n' "$paths" | sed -n '1p')"
+  worktree="$(printf '%s\n' "$paths" | sed -n '2p')"
+  SIDEBAR_PORT1="$(free_port)"
+  SIDEBAR_PORT2="$(free_port)"
+  spawn_agent pi 'Pi task' "$shared" "$SIDEBAR_PORT1"
+  spawn_agent codex 'Codex task' "$worktree" "$SIDEBAR_PORT2"
 }
 
 snapshot_case() {
@@ -108,7 +155,7 @@ plugin_case() {
 }
 
 sidebar_case() {
-  setup_agents
+  setup_sidebar_agents
   tmux -L "$SOCK" switch-client -t "$SESSION" 2>/dev/null || true
   TMUX="$TMUX_ENV" "$ROOT/hoppers.tmux"
   local target_window
@@ -124,10 +171,14 @@ sidebar_case() {
   local capture
   capture="$(tmux -L "$SOCK" capture-pane -p -t "$sidebar" -S -80)"
   not_contains "$capture" 'project cockpit' && ok 'sidebar omits header chrome' || not_ok 'sidebar omits header chrome' "$capture"
-  contains "$capture" 'claude' && ok 'sidebar detects claude' || not_ok 'sidebar detects claude' "$capture"
+  contains "$capture" 'codex' && ok 'sidebar detects codex' || not_ok 'sidebar detects codex' "$capture"
   contains "$capture" '|>' && ok 'sidebar shows timeline glyphs' || not_ok 'sidebar shows timeline glyphs' "$capture"
   contains "$capture" '1 pi' && ok 'sidebar shows selection row' || not_ok 'sidebar shows selection row' "$capture"
   contains "$capture" 'enter jump' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
+  contains "$capture" 'shared-project' && not_contains "$capture" 'shared-worktree' && ok 'sidebar groups worktrees by project' || not_ok 'sidebar groups worktrees by project' "$capture"
+  contains "$capture" 'pi-branch*' && ok 'sidebar shows dirty branch subgroup' || not_ok 'sidebar shows dirty branch subgroup' "$capture"
+  contains "$capture" 'codex-branch* wt' && ok 'sidebar shows worktree subgroup' || not_ok 'sidebar shows worktree subgroup' "$capture"
+  contains "$capture" ":$SIDEBAR_PORT1" && contains "$capture" ":$SIDEBAR_PORT2" && ok 'sidebar shows subgroup ports' || not_ok 'sidebar shows subgroup ports' "$capture"
   target_window="$(tmux -L "$SOCK" display-message -p -t hoppers-other:main '#{window_id}')"
   HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" sync >"$LOG" 2>&1
   sleep 1

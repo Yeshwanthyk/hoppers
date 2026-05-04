@@ -246,9 +246,9 @@ pub const CockpitView = struct {
         for (self.items, 0..) |item, index| {
             if (!self.isVisible(item)) continue;
             visible_items += 1;
-            if (!std.mem.eql(u8, current_project, item.project.name)) {
+            if (!std.mem.eql(u8, current_project, item.project.id)) {
                 if (row + 3 >= content_bottom) break;
-                current_project = item.project.name;
+                current_project = item.project.id;
                 current_subgroup = "";
                 const stats = projectStats(self.items[index..], current_project, self.filter);
                 row = writeProject(surface, row, item.project, stats);
@@ -256,7 +256,7 @@ pub const CockpitView = struct {
             if (!std.mem.eql(u8, current_subgroup, item.project.root)) {
                 if (row + 1 >= content_bottom) break;
                 current_subgroup = item.project.root;
-                writeSubgroup(surface, row, item.project);
+                writeSubgroup(surface, row, item.project, self.items[index..]);
                 row += 1;
             }
             if (row >= content_bottom) break;
@@ -305,20 +305,74 @@ fn writeProject(surface: vxfw.Surface, row: u16, project: model.Project, stats: 
     return next + 1;
 }
 
-fn writeSubgroup(surface: vxfw.Surface, row: u16, project: model.Project) void {
-    var buf: [96]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const writer = stream.writer();
-    if (project.branch.len > 0) {
-        writer.writeAll(project.branch) catch return;
-        if (project.dirty) writer.writeAll("*") catch return;
-        if (project.worktree) writer.writeAll(" wt") catch return;
-    } else {
-        writer.writeAll(std.fs.path.basename(project.root)) catch return;
+fn writeSubgroup(surface: vxfw.Surface, row: u16, project: model.Project, items: []const model.CockpitItem) void {
+    var col: u16 = 3;
+    const style = subtleStyle();
+    const label = if (project.branch.len > 0) project.branch else std.fs.path.basename(project.root);
+    col = writeTextBounded(surface, col, row, label, style);
+    if (project.branch.len > 0 and project.dirty) col = writeTextBounded(surface, col, row, "*", style);
+    if (project.branch.len > 0 and project.worktree) col = writeTextBounded(surface, col, row, " wt", style);
+    var rendered: [32]u16 = undefined;
+    var rendered_len: usize = 0;
+    for (items) |item| {
+        if (!std.mem.eql(u8, item.project.id, project.id)) break;
+        if (!std.mem.eql(u8, item.project.root, project.root)) continue;
+        for (item.project.ports) |port| {
+            if (containsPort(rendered[0..rendered_len], port)) continue;
+            if (rendered_len < rendered.len) {
+                rendered[rendered_len] = port;
+                rendered_len += 1;
+            }
+            col = writeTextBounded(surface, col, row, " :", style);
+            col = writePort(surface, col, row, port, style);
+        }
     }
-    for (project.ports) |port| writer.print(" :{d}", .{port}) catch return;
-    const text = stream.getWritten();
-    writeTextTruncated(surface, 3, row, text, surface.size.width - 4, subtleStyle());
+}
+
+fn containsPort(ports: []const u16, port: u16) bool {
+    for (ports) |existing| {
+        if (existing == port) return true;
+    }
+    return false;
+}
+
+fn writeTextBounded(surface: vxfw.Surface, col: u16, row: u16, text: []const u8, style: vaxis.Style) u16 {
+    var x = col;
+    var iter: std.unicode.Utf8Iterator = .{ .bytes = text, .i = 0 };
+    while (iter.nextCodepointSlice()) |grapheme| {
+        if (x + 1 >= surface.size.width) return x;
+        surface.writeCell(x, row, .{ .char = .{ .grapheme = grapheme }, .style = style });
+        x += 1;
+    }
+    return x;
+}
+
+fn writePort(surface: vxfw.Surface, col: u16, row: u16, port: u16, style: vaxis.Style) u16 {
+    var digits: [5]u8 = undefined;
+    const text = std.fmt.bufPrint(&digits, "{d}", .{port}) catch return col;
+    var x = col;
+    for (text) |digit| {
+        if (x + 1 >= surface.size.width) return x;
+        surface.writeCell(x, row, .{ .char = .{ .grapheme = digitGrapheme(digit) }, .style = style });
+        x += 1;
+    }
+    return x;
+}
+
+fn digitGrapheme(digit: u8) []const u8 {
+    return switch (digit) {
+        '0' => "0",
+        '1' => "1",
+        '2' => "2",
+        '3' => "3",
+        '4' => "4",
+        '5' => "5",
+        '6' => "6",
+        '7' => "7",
+        '8' => "8",
+        '9' => "9",
+        else => "?",
+    };
 }
 
 fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected: bool) void {
@@ -422,10 +476,10 @@ fn listStats(items: []const model.CockpitItem) StatusCounts {
     return stats;
 }
 
-fn projectStats(items: []const model.CockpitItem, project_name: []const u8, filter: FilterMode) StatusCounts {
+fn projectStats(items: []const model.CockpitItem, project_id: []const u8, filter: FilterMode) StatusCounts {
     var stats: StatusCounts = .{};
     for (items) |item| {
-        if (!std.mem.eql(u8, item.project.name, project_name)) break;
+        if (!std.mem.eql(u8, item.project.id, project_id)) break;
         if (!statusVisible(filter, item.agent.status)) continue;
         addStatus(&stats, item.agent.status);
     }
