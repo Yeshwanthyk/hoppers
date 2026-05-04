@@ -98,13 +98,11 @@ plugin_case() {
   local keys
   sleep 1
   keys="$(tmux -L "$SOCK" list-keys -T prefix Space 2>/dev/null || true)"
-  contains "$keys" 'switch-client -T hoppers' && ok 'plugin binds hoppers table' || not_ok 'plugin binds hoppers table' "$keys" "$(cat "$LOG" 2>/dev/null || true)"
-  keys="$(tmux -L "$SOCK" list-keys -T hoppers s 2>/dev/null || true)"
-  contains "$keys" 'toggle.sh' && ok 'plugin binds table sidebar key' || not_ok 'plugin binds table sidebar key' "$keys"
-  keys="$(tmux -L "$SOCK" list-keys -T hoppers j 2>/dev/null || true)"
-  contains "$keys" 'jump-relative.sh' && ok 'plugin binds table next key' || not_ok 'plugin binds table next key' "$keys"
-  keys="$(tmux -L "$SOCK" list-keys -T hoppers 1 2>/dev/null || true)"
-  contains "$keys" 'jump.sh' && contains "$keys" ' 1 ' && ok 'plugin binds table rank keys' || not_ok 'plugin binds table rank keys' "$keys"
+  contains "$keys" 'sidebar.sh' && contains "$keys" 'open-focus' && ok 'plugin binds sidebar focus' || not_ok 'plugin binds sidebar focus' "$keys" "$(cat "$LOG" 2>/dev/null || true)"
+  HOPPERS_TARGET_WINDOW="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{window_id}')" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" open-focus >"$LOG" 2>&1
+  local active_pane
+  active_pane="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{pane_title}|#{pane_start_command}')"
+  contains "$active_pane" 'hoppers-sidebar' && ok 'sidebar focus command selects sidebar' || not_ok 'sidebar focus command selects sidebar' "$active_pane" "$(cat "$LOG" 2>/dev/null || true)"
   keys="$(tmux -L "$SOCK" list-keys -T root S-Down 2>/dev/null || true)"
   contains "$keys" 'jump-project.sh' && ok 'plugin binds project jump keys' || not_ok 'plugin binds project jump keys' "$keys"
 }
@@ -128,6 +126,7 @@ sidebar_case() {
   contains "$capture" 'hoppers · project cockpit' && ok 'sidebar header visible' || not_ok 'sidebar header visible' "$capture"
   contains "$capture" 'claude' && ok 'sidebar detects claude' || not_ok 'sidebar detects claude' "$capture"
   contains "$capture" '●' && ok 'sidebar shows status icons' || not_ok 'sidebar shows status icons' "$capture"
+  contains "$capture" '›' && ok 'sidebar shows selection' || not_ok 'sidebar shows selection' "$capture"
   contains "$capture" 'S-Up/S-Down project' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
   target_window="$(tmux -L "$SOCK" display-message -p -t hoppers-other:main '#{window_id}')"
   HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" sync >"$LOG" 2>&1
