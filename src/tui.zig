@@ -263,38 +263,29 @@ pub const CockpitView = struct {
             return surface;
         }
 
-        if (row + 4 < content_bottom) drawSelectedDetail(surface, row + 1, self.selectedItem());
-
         drawFooter(surface, max_size, footer_visible);
         return surface;
-    }
-
-    fn selectedItem(self: *CockpitView) ?model.CockpitItem {
-        const index = self.selectedIndex() orelse return null;
-        return self.items[index];
     }
 };
 
 fn drawHeader(surface: vxfw.Surface, items: []const model.CockpitItem, filter: FilterMode) u16 {
     const stats = listStats(items);
     writeText(surface, 1, 0, "hoppers", .{ .fg = theme.text, .bold = true });
-    writeRight(surface, 0, filter.label(), 1, .{ .fg = theme.accent, .bold = true });
-
     var buf: [64]u8 = undefined;
-    const summary = std.fmt.bufPrint(&buf, "{d} agents  !{d} x{d} >{d}", .{
+    var heat_buf: [48]u8 = undefined;
+    const summary = std.fmt.bufPrint(&buf, "{s} · {d} · {s}", .{
+        filter.label(),
         stats.total,
-        stats.waiting,
-        stats.failed,
-        stats.running,
+        heatLabel(&heat_buf, stats),
     }) catch "";
-    if (innerWidth(surface)) |width| writeTextTruncated(surface, 1, 1, summary, width, subtleStyle());
-    drawRule(surface, 2, theme.surface2);
-    return 3;
+    writeRight(surface, 0, summary, 1, .{ .fg = theme.accent, .bold = true });
+    drawRule(surface, 1, theme.surface2);
+    return 2;
 }
 
 fn writeProject(surface: vxfw.Surface, row: u16, name: []const u8, stats: StatusCounts) u16 {
     var next = row;
-    if (next > 3) {
+    if (next > 2) {
         drawRule(surface, next, theme.surface);
         next += 1;
     }
@@ -318,36 +309,13 @@ fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected:
     writeText(surface, 1, row, rankLabel(item.rank), rank_style);
     writeText(surface, 3, row, item.agent.kind.label(), kind_style);
     writeText(surface, 10, row, statusIcon(item.agent.status), status_style);
-    writeText(surface, 13, row, statusReason(item.agent.status), status_style);
+    writeText(surface, 13, row, statusReasonShort(item.agent.status), status_style);
 
-    const title_col: u16 = 22;
+    const title_col: u16 = 18;
     if (surface.size.width > title_col and item.agent.title.len > 0) {
-        const title_width = surface.size.width - title_col - 1;
+        const title_width = surface.size.width - title_col;
         writeTextTruncated(surface, title_col, row, item.agent.title, title_width, text_style);
     }
-}
-
-fn drawSelectedDetail(surface: vxfw.Surface, row: u16, item: ?model.CockpitItem) void {
-    const selected = item orelse return;
-    drawRule(surface, row, theme.surface2);
-    if (row + 1 >= surface.size.height) return;
-    writeText(surface, 1, row + 1, "detail", .{ .fg = theme.subtext, .bold = true });
-
-    if (row + 2 >= surface.size.height) return;
-    const width = innerWidth(surface) orelse return;
-    writeTextTruncated(surface, 1, row + 2, selected.project.root, width, subtleStyle());
-
-    if (row + 3 >= surface.size.height) return;
-    var target_buf: [96]u8 = undefined;
-    const target = std.fmt.bufPrint(
-        &target_buf,
-        "pane {s}  session {s}  window {s}",
-        .{ selected.agent.pane_id, selected.agent.session_name, selected.agent.window_id },
-    ) catch "";
-    writeTextTruncated(surface, 1, row + 3, target, width, subtleStyle());
-
-    if (row + 4 >= surface.size.height or selected.agent.title.len == 0) return;
-    writeTextTruncated(surface, 1, row + 4, selected.agent.title, width, subtleStyle());
 }
 
 fn clearSurface(surface: vxfw.Surface) void {
@@ -416,11 +384,6 @@ fn writeText(surface: vxfw.Surface, col: u16, row: u16, text: []const u8, style:
     }
 }
 
-fn innerWidth(surface: vxfw.Surface) ?u16 {
-    if (surface.size.width <= 2) return null;
-    return surface.size.width - 2;
-}
-
 const StatusCounts = struct {
     total: usize = 0,
     waiting: usize = 0,
@@ -458,9 +421,17 @@ fn addStatus(stats: *StatusCounts, status: model.AgentStatus) void {
 
 fn heatLabel(buf: []u8, stats: StatusCounts) []const u8 {
     if (stats.total == 0) return "";
-    if (stats.waiting > 0 or stats.failed > 0 or stats.running > 0) {
+    if (stats.waiting > 0 and stats.failed > 0 and stats.running > 0)
         return std.fmt.bufPrint(buf, "!{d} x{d} >{d}", .{ stats.waiting, stats.failed, stats.running }) catch "";
-    }
+    if (stats.waiting > 0 and stats.failed > 0)
+        return std.fmt.bufPrint(buf, "!{d} x{d}", .{ stats.waiting, stats.failed }) catch "";
+    if (stats.waiting > 0 and stats.running > 0)
+        return std.fmt.bufPrint(buf, "!{d} >{d}", .{ stats.waiting, stats.running }) catch "";
+    if (stats.failed > 0 and stats.running > 0)
+        return std.fmt.bufPrint(buf, "x{d} >{d}", .{ stats.failed, stats.running }) catch "";
+    if (stats.waiting > 0) return std.fmt.bufPrint(buf, "!{d}", .{stats.waiting}) catch "";
+    if (stats.failed > 0) return std.fmt.bufPrint(buf, "x{d}", .{stats.failed}) catch "";
+    if (stats.running > 0) return std.fmt.bufPrint(buf, ">{d}", .{stats.running}) catch "";
     if (stats.done > 0) return std.fmt.bufPrint(buf, "v{d}", .{stats.done}) catch "";
     return "idle";
 }
@@ -520,14 +491,14 @@ fn statusIcon(status: model.AgentStatus) []const u8 {
     };
 }
 
-fn statusReason(status: model.AgentStatus) []const u8 {
+fn statusReasonShort(status: model.AgentStatus) []const u8 {
     return switch (status) {
         .idle => "idle",
-        .running => "active",
+        .running => "run",
         .waiting => "input",
         .done => "done",
-        .failed => "failed",
-        .stale => "stalled",
+        .failed => "fail",
+        .stale => "stale",
     };
 }
 

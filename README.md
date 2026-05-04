@@ -39,7 +39,7 @@ After updating hoppers with TPM, rebuild and reload:
 cd ~/.tmux/plugins/hoppers
 git pull
 zig build
-tmux source-file ~/.tmux/plugins/hoppers/hoppers.tmux
+tmux run-shell ~/.tmux/plugins/hoppers/hoppers.tmux
 ```
 
 ## Default keys

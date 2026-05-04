@@ -89,7 +89,7 @@ snapshot_case() {
 
 plugin_case() {
   start_tmux
-  if tmux -L "$SOCK" source-file "$ROOT/hoppers.tmux" >"$TMP/source.out" 2>"$TMP/source.err"; then
+  if TMUX="$TMUX_ENV" "$ROOT/hoppers.tmux" >"$TMP/source.out" 2>"$TMP/source.err"; then
     ok 'plugin sources'
   else
     not_ok 'plugin sources' "$(cat "$TMP/source.err")"
@@ -110,7 +110,7 @@ plugin_case() {
 sidebar_case() {
   setup_agents
   tmux -L "$SOCK" switch-client -t "$SESSION" 2>/dev/null || true
-  tmux -L "$SOCK" source-file "$ROOT/hoppers.tmux"
+  TMUX="$TMUX_ENV" "$ROOT/hoppers.tmux"
   local target_window
   target_window="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{window_id}')"
   HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/toggle.sh" >"$LOG" 2>&1
