@@ -11,7 +11,6 @@ shell_quote() {
 toggle_script="$(shell_quote "$CURRENT_DIR/scripts/toggle.sh")"
 sidebar_script="$(shell_quote "$CURRENT_DIR/scripts/sidebar.sh")"
 jump_script="$(shell_quote "$CURRENT_DIR/scripts/jump.sh")"
-jump_relative_script="$(shell_quote "$CURRENT_DIR/scripts/jump-relative.sh")"
 jump_project_script="$(shell_quote "$CURRENT_DIR/scripts/jump-project.sh")"
 log_path="$(shell_quote "$LOG_PATH")"
 
@@ -22,23 +21,11 @@ legacy_focus_key="$(tmux show-option -gqv @hoppers-focus-global-key)"
 hoppers_focus_keys="${hoppers_focus_keys:-$legacy_focus_key}"
 hoppers_index_keys="$(tmux show-option -gqv @hoppers-index-keys)"
 
-tmux bind-key "$hoppers_prefix_key" switch-client -T hoppers \; display-message 'hoppers: s sidebar · j/k agent · S-Up/S-Down project · 1..9 rank'
+tmux bind-key "$hoppers_prefix_key" run-shell -b "$sidebar_script open-focus >$log_path 2>&1"
 
-tmux bind-key -T hoppers s run-shell -b "$toggle_script >$log_path 2>&1"
-tmux bind-key -T hoppers j run-shell -b "$jump_relative_script next >$log_path 2>&1"
-tmux bind-key -T hoppers k run-shell -b "$jump_relative_script prev >$log_path 2>&1"
-tmux bind-key -T hoppers S-Up run-shell -b "$jump_project_script prev >$log_path 2>&1"
-tmux bind-key -T hoppers S-Down run-shell -b "$jump_project_script next >$log_path 2>&1"
 tmux bind-key -n S-Up run-shell -b "$jump_project_script prev >$log_path 2>&1"
 tmux bind-key -n S-Down run-shell -b "$jump_project_script next >$log_path 2>&1"
-tmux bind-key -T hoppers q switch-client -T root
-tmux bind-key -T hoppers Escape switch-client -T root
-
 tmux set-hook -g client-session-changed "run-shell -b \"$sidebar_script sync >$log_path 2>&1\""
-
-for idx in 1 2 3 4 5 6 7 8 9; do
-  tmux bind-key -T hoppers "$idx" run-shell -b "$jump_script $idx >$log_path 2>&1"
-done
 
 for key in $hoppers_focus_keys; do
   tmux bind-key -n "$key" run-shell -b "$toggle_script >$log_path 2>&1"

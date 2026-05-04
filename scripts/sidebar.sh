@@ -50,6 +50,12 @@ case "$command" in
     tmux set-option -gq "$STATE_OPTION" on
     open_sidebar "$current_window"
     ;;
+  open-focus)
+    tmux set-option -gq "$STATE_OPTION" on
+    open_sidebar "$current_window"
+    sidebar_pane="$(find_sidebar "$current_window")"
+    [ -n "$sidebar_pane" ] && tmux select-pane -t "$sidebar_pane"
+    ;;
   close)
     tmux set-option -gq "$STATE_OPTION" off
     close_sidebar "$current_window"
@@ -69,7 +75,7 @@ case "$command" in
     fi
     ;;
   *)
-    echo "usage: sidebar.sh [toggle|open|close|sync]" >&2
+    echo "usage: sidebar.sh [toggle|open|open-focus|close|sync]" >&2
     exit 2
     ;;
 esac
