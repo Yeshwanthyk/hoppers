@@ -46,6 +46,7 @@ pub const CockpitView = struct {
     allocator: std.mem.Allocator,
     items: []model.CockpitItem,
     refresh_ms: u32 = 3000,
+    selected_rank: usize = 1,
 
     pub fn deinit(self: *CockpitView) void {
         discovery.freeCockpitItems(self.allocator, self.items);
@@ -75,11 +76,22 @@ pub const CockpitView = struct {
                     return;
                 }
                 if (key.matches('j', .{})) {
-                    try self.jumpRelative(.next);
+                    self.moveSelection(.next);
+                    ctx.redraw = true;
                     return;
                 }
                 if (key.matches('k', .{})) {
-                    try self.jumpRelative(.prev);
+                    self.moveSelection(.prev);
+                    ctx.redraw = true;
+                    return;
+                }
+                if (key.matches(vaxis.Key.enter, .{})) {
+                    try self.jumpSelected();
+                    return;
+                }
+                if (key.codepoint >= '1' and key.codepoint <= '9') {
+                    self.selectRank(@intCast(key.codepoint - '0'));
+                    ctx.redraw = true;
                     return;
                 }
                 if (key.matches('r', .{})) {
@@ -94,31 +106,38 @@ pub const CockpitView = struct {
 
     const Direction = enum { next, prev };
 
-    fn jumpRelative(self: *CockpitView, direction: Direction) !void {
+    fn moveSelection(self: *CockpitView, direction: Direction) void {
         if (self.items.len == 0) return;
-        const controller = tmux.Controller.init(self.allocator);
-        const active_pane_id = controller.activePaneId() catch null;
-        defer if (active_pane_id) |pane_id| self.allocator.free(pane_id);
+        const current_index = self.selectedIndex() orelse 0;
+        const next_index = switch (direction) {
+            .next => (current_index + 1) % self.items.len,
+            .prev => if (current_index == 0) self.items.len - 1 else current_index - 1,
+        };
+        self.selected_rank = self.items[next_index].rank;
+    }
 
-        var active_index: ?usize = null;
-        if (active_pane_id) |pane_id| {
-            for (self.items, 0..) |item, index| {
-                if (std.mem.eql(u8, item.agent.pane_id, pane_id)) {
-                    active_index = index;
-                    break;
-                }
+    fn selectRank(self: *CockpitView, rank: usize) void {
+        for (self.items) |item| {
+            if (item.rank == rank) {
+                self.selected_rank = rank;
+                return;
             }
         }
+    }
 
-        const target_index = switch (direction) {
-            .next => if (active_index) |index| (index + 1) % self.items.len else 0,
-            .prev => if (active_index) |index| blk: {
-                break :blk if (index == 0) self.items.len - 1 else index - 1;
-            } else self.items.len - 1,
-        };
-        const item = self.items[target_index];
+    fn jumpSelected(self: *CockpitView) !void {
+        const index = self.selectedIndex() orelse return;
+        const item = self.items[index];
+        const controller = tmux.Controller.init(self.allocator);
         try controller.switchSession(item.agent.session_name);
         try controller.selectPane(item.agent.pane_id);
+    }
+
+    fn selectedIndex(self: *CockpitView) ?usize {
+        for (self.items, 0..) |item, index| {
+            if (item.rank == self.selected_rank) return index;
+        }
+        return null;
     }
 
     fn refresh(self: *CockpitView) !void {
@@ -129,6 +148,7 @@ pub const CockpitView = struct {
         const next_items = try discovery.buildCockpit(self.allocator, panes);
         discovery.freeCockpitItems(self.allocator, self.items);
         self.items = next_items;
+        if (self.selectedIndex() == null and self.items.len > 0) self.selected_rank = self.items[0].rank;
     }
 
     fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -165,7 +185,7 @@ pub const CockpitView = struct {
                 row = writeProject(surface, row, current_project, project_agents);
             }
             if (row >= content_bottom) break;
-            writeItem(surface, row, item);
+            writeItem(surface, row, item, item.rank == self.selected_rank);
             row += 1;
         }
 
@@ -185,20 +205,23 @@ fn writeProject(surface: vxfw.Surface, row: u16, name: []const u8, _: usize) u16
     return next + 1;
 }
 
-fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem) void {
+fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected: bool) void {
     const status_style = statusStyle(item.agent.status);
     const kind_style: vaxis.Style = .{ .fg = kindColor(item.agent.kind), .bold = true };
     const text_style: vaxis.Style = .{ .fg = theme.text };
+    const cursor = if (selected) "›" else " ";
 
+    writeText(surface, 0, row, cursor, .{ .fg = theme.accent, .bold = true });
     writeText(surface, 1, row, rankLabel(item.rank), .{ .fg = theme.accent, .bold = true });
     writeText(surface, 3, row, statusIcon(item.agent.status), status_style);
     writeText(surface, 5, row, item.agent.kind.label(), kind_style);
 
-    writeRight(surface, row, item.agent.status.label(), 1, status_style);
-
     const title_col: u16 = 13;
-    if (surface.size.width > title_col + 8) {
-        writeText(surface, title_col, row, item.project.name, text_style);
+    if (surface.size.width > 42) {
+        writeRight(surface, row, item.agent.status.label(), 1, status_style);
+        writeText(surface, title_col, row, item.agent.title, text_style);
+    } else if (surface.size.width > 28) {
+        writeText(surface, title_col, row, item.agent.title, text_style);
     }
 }
 

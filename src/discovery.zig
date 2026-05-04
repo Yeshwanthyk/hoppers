@@ -38,7 +38,8 @@ fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.
     const id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ kind.label(), pane.pane_id });
     errdefer allocator.free(id);
 
-    const title = if (pane.title.len > 0) pane.title else pane.current_command;
+    const title = activityTitle(pane);
+    const status = inferStatus(title);
     const owned_session_name = try allocator.dupe(u8, pane.session_name);
     errdefer allocator.free(owned_session_name);
     const owned_window_id = try allocator.dupe(u8, pane.window_id);
@@ -51,7 +52,7 @@ fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.
     const agent: model.AgentInstance = .{
         .id = id,
         .kind = kind,
-        .status = .running,
+        .status = status,
         .project_id = project.id,
         .session_name = owned_session_name,
         .window_id = owned_window_id,
@@ -61,6 +62,27 @@ fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.
     };
     const priority = ranking.agentPriority(project, agent);
     return .{ .rank = 0, .priority = priority, .project = project, .agent = agent };
+}
+
+fn activityTitle(pane: model.TmuxPane) []const u8 {
+    if (pane.title.len > 0) return pane.title;
+    if (pane.start_command.len > 0) return pane.start_command;
+    return pane.current_command;
+}
+
+fn inferStatus(title: []const u8) model.AgentStatus {
+    var lower_buf: [256]u8 = undefined;
+    const n = @min(title.len, lower_buf.len);
+    const lower = lower_buf[0..n];
+    for (title[0..n], 0..) |char, i| lower[i] = std.ascii.toLower(char);
+    if (contains(lower, "error") or contains(lower, "failed")) return .failed;
+    if (contains(lower, "ready") or contains(lower, "waiting")) return .waiting;
+    if (contains(lower, "executing") or contains(lower, "running")) return .running;
+    return .running;
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
 fn detectPaneAgentKind(allocator: std.mem.Allocator, pane: model.TmuxPane) model.AgentKind {
