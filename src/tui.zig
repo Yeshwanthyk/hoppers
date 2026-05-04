@@ -157,6 +157,7 @@ pub const CockpitView = struct {
         const surface = try vxfw.Surface.init(ctx.arena, self.widget(), max_size);
 
         if (max_size.height == 0 or max_size.width == 0) return surface;
+        clearSurface(surface);
 
         const footer_visible = max_size.height >= 8;
         const content_bottom = if (footer_visible) max_size.height - 2 else max_size.height;
@@ -181,9 +182,9 @@ pub const CockpitView = struct {
             const selected = item.rank == self.selected_rank;
             writeItem(surface, row, item, selected);
             row += 1;
-            if (selected and row < content_bottom and item.agent.title.len > 0 and max_size.width > 28) {
+            if (selected and row < content_bottom and item.agent.title.len > 0 and max_size.width > 32) {
                 writeText(surface, 3, row, "↳", subtleStyle());
-                writeText(surface, 5, row, item.agent.title, subtleStyle());
+                writeTextTruncated(surface, 5, row, item.agent.title, max_size.width - 6, subtleStyle());
                 row += 1;
             }
         }
@@ -220,9 +221,24 @@ fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected:
     const title_col: u16 = 10;
     if (surface.size.width > 42) {
         writeRight(surface, row, item.agent.status.label(), 1, status_style);
-        if (item.agent.title.len > 0) writeText(surface, title_col, row, item.agent.title, text_style);
-    } else if (surface.size.width > 28 and item.agent.title.len > 0) {
-        writeText(surface, title_col, row, item.agent.title, text_style);
+        const status_width = displayWidth(item.agent.status.label()) + 2;
+        if (item.agent.title.len > 0 and surface.size.width > title_col + status_width) {
+            const title_width = surface.size.width - title_col - status_width;
+            writeTextTruncated(surface, title_col, row, item.agent.title, title_width, text_style);
+        }
+    } else if (surface.size.width > title_col and item.agent.title.len > 0) {
+        const title_width = surface.size.width - title_col - 1;
+        writeTextTruncated(surface, title_col, row, item.agent.title, title_width, text_style);
+    }
+}
+
+fn clearSurface(surface: vxfw.Surface) void {
+    var row: u16 = 0;
+    while (row < surface.size.height) : (row += 1) {
+        var col: u16 = 0;
+        while (col < surface.size.width) : (col += 1) {
+            surface.writeCell(col, row, .{ .char = .{ .grapheme = " " }, .style = .{} });
+        }
     }
 }
 
@@ -245,6 +261,30 @@ fn writeRight(surface: vxfw.Surface, row: u16, text: []const u8, margin: u16, st
     if (width + margin >= surface.size.width) return;
     const col: u16 = @intCast(surface.size.width - margin - width);
     writeText(surface, col, row, text, style);
+}
+
+fn writeTextTruncated(
+    surface: vxfw.Surface,
+    col: u16,
+    row: u16,
+    text: []const u8,
+    max_width: u16,
+    style: vaxis.Style,
+) void {
+    if (max_width == 0) return;
+    var x = col;
+    var written: u16 = 0;
+    var iter: std.unicode.Utf8Iterator = .{ .bytes = text, .i = 0 };
+    while (iter.nextCodepointSlice()) |grapheme| {
+        if (x >= surface.size.width or written >= max_width) break;
+        if (written + 1 == max_width and iter.i < text.len) {
+            surface.writeCell(x, row, .{ .char = .{ .grapheme = "…" }, .style = style });
+            return;
+        }
+        surface.writeCell(x, row, .{ .char = .{ .grapheme = grapheme }, .style = style });
+        x += 1;
+        written += 1;
+    }
 }
 
 fn writeText(surface: vxfw.Surface, col: u16, row: u16, text: []const u8, style: vaxis.Style) void {
