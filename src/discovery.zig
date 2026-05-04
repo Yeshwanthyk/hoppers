@@ -2,6 +2,7 @@ const std = @import("std");
 const model = @import("model.zig");
 const projects = @import("projects.zig");
 const ranking = @import("ranking.zig");
+const tmux = @import("tmux.zig");
 
 pub fn buildCockpit(allocator: std.mem.Allocator, panes: []const model.TmuxPane) ![]model.CockpitItem {
     var items: std.ArrayList(model.CockpitItem) = .empty;
@@ -39,8 +40,12 @@ fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.
     errdefer allocator.free(id);
 
     const raw_title = activityTitle(pane);
-    const title = trimActivityTitle(raw_title, project.name);
+    const fallback_title = trimActivityTitle(raw_title, project.name);
+    const captured_title = captureActivity(allocator, pane.pane_id) catch fallback_title;
+    const title = if (captured_title.len > 0) captured_title else fallback_title;
     const status = inferStatus(title);
+    defer if (title.ptr != fallback_title.ptr and title.ptr != raw_title.ptr) allocator.free(title);
+
     const owned_session_name = try allocator.dupe(u8, pane.session_name);
     errdefer allocator.free(owned_session_name);
     const owned_window_id = try allocator.dupe(u8, pane.window_id);
@@ -63,6 +68,27 @@ fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.
     };
     const priority = ranking.agentPriority(project, agent);
     return .{ .rank = 0, .priority = priority, .project = project, .agent = agent };
+}
+
+fn captureActivity(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
+    const controller = tmux.Controller.init(allocator);
+    const capture = try controller.capturePane(pane_id);
+    defer allocator.free(capture);
+    const line = lastMeaningfulLine(capture) orelse return allocator.dupe(u8, "");
+    return allocator.dupe(u8, line);
+}
+
+fn lastMeaningfulLine(capture: []const u8) ?[]const u8 {
+    var result: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, capture, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (std.mem.startsWith(u8, trimmed, "hoppers")) continue;
+        if (std.mem.indexOf(u8, trimmed, "Session compacted") != null) continue;
+        result = trimmed;
+    }
+    return result;
 }
 
 fn activityTitle(pane: model.TmuxPane) []const u8 {

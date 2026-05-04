@@ -162,13 +162,6 @@ pub const CockpitView = struct {
         const content_bottom = if (footer_visible) max_size.height - 2 else max_size.height;
         var row: u16 = 0;
 
-        writeText(surface, 1, row, "hoppers", .{ .fg = theme.accent, .bold = true });
-        writeText(surface, 9, row, "· project cockpit", .{ .fg = theme.subtext });
-        row += 1;
-
-        drawRule(surface, row, theme.surface2);
-        row += 1;
-
         if (self.items.len == 0) {
             if (row < content_bottom) writeText(surface, 1, row, "no agent panes detected", subtleStyle());
             drawFooter(surface, max_size, footer_visible);
@@ -185,8 +178,14 @@ pub const CockpitView = struct {
                 row = writeProject(surface, row, current_project, project_agents);
             }
             if (row >= content_bottom) break;
-            writeItem(surface, row, item, item.rank == self.selected_rank);
+            const selected = item.rank == self.selected_rank;
+            writeItem(surface, row, item, selected);
             row += 1;
+            if (selected and row < content_bottom and item.agent.title.len > 0 and max_size.width > 28) {
+                writeText(surface, 3, row, "↳", subtleStyle());
+                writeText(surface, 5, row, item.agent.title, subtleStyle());
+                row += 1;
+            }
         }
 
         drawFooter(surface, max_size, footer_visible);
@@ -215,10 +214,10 @@ fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected:
         .{ .fg = theme.accent, .bold = true };
 
     writeText(surface, 1, row, rankLabel(item.rank), rank_style);
-    writeText(surface, 3, row, statusIcon(item.agent.status), status_style);
-    writeText(surface, 5, row, item.agent.kind.label(), kind_style);
+    writeText(surface, 3, row, item.agent.kind.label(), kind_style);
+    writeText(surface, 7, row, statusIcon(item.agent.status), status_style);
 
-    const title_col: u16 = 9;
+    const title_col: u16 = 10;
     if (surface.size.width > 42) {
         writeRight(surface, row, item.agent.status.label(), 1, status_style);
         if (item.agent.title.len > 0) writeText(surface, title_col, row, item.agent.title, text_style);
@@ -231,7 +230,7 @@ fn drawFooter(surface: vxfw.Surface, size: vxfw.Size, visible: bool) void {
     if (!visible) return;
     const row = size.height - 1;
     drawRule(surface, row - 1, theme.surface2);
-    writeText(surface, 1, row, "j/k agent · S-Up/S-Down project · q", subtleStyle());
+    writeText(surface, 1, row, "j/k select · enter jump · q", subtleStyle());
 }
 
 fn drawRule(surface: vxfw.Surface, row: u16, color: vaxis.Color) void {
@@ -292,12 +291,12 @@ fn rankLabel(rank: usize) []const u8 {
 
 fn statusIcon(status: model.AgentStatus) []const u8 {
     return switch (status) {
-        .running => "●",
-        .waiting => "◉",
+        .running => "|>",
+        .waiting => "?",
         .done => "✓",
-        .failed => "✗",
-        .stale => "!",
-        .idle => "○",
+        .failed => "!",
+        .stale => "~",
+        .idle => "·",
     };
 }
 

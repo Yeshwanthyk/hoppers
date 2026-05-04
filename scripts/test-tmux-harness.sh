@@ -123,11 +123,11 @@ sidebar_case() {
   tmux -L "$SOCK" list-panes -t "$SESSION":main -F '#{pane_id}' | grep -Fq "$sidebar" && ok 'sidebar stays alive' || not_ok 'sidebar stays alive' "$(cat "$LOG" 2>/dev/null || true)"
   local capture
   capture="$(tmux -L "$SOCK" capture-pane -p -t "$sidebar" -S -80)"
-  contains "$capture" 'hoppers · project cockpit' && ok 'sidebar header visible' || not_ok 'sidebar header visible' "$capture"
+  not_contains "$capture" 'project cockpit' && ok 'sidebar omits header chrome' || not_ok 'sidebar omits header chrome' "$capture"
   contains "$capture" 'claude' && ok 'sidebar detects claude' || not_ok 'sidebar detects claude' "$capture"
-  contains "$capture" '●' && ok 'sidebar shows status icons' || not_ok 'sidebar shows status icons' "$capture"
-  contains "$capture" '1 ●' && ok 'sidebar shows selection row' || not_ok 'sidebar shows selection row' "$capture"
-  contains "$capture" 'S-Up/S-Down project' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
+  contains "$capture" '|>' && ok 'sidebar shows timeline glyphs' || not_ok 'sidebar shows timeline glyphs' "$capture"
+  contains "$capture" '1 pi' && ok 'sidebar shows selection row' || not_ok 'sidebar shows selection row' "$capture"
+  contains "$capture" 'enter jump' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
   target_window="$(tmux -L "$SOCK" display-message -p -t hoppers-other:main '#{window_id}')"
   HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" sync >"$LOG" 2>&1
   sleep 1
