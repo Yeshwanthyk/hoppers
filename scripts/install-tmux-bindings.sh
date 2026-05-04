@@ -8,26 +8,38 @@ shell_quote() {
   printf "'%s'" "$(printf "%s" "$1" | sed "s/'/'\\''/g")"
 }
 
-start_script="$(shell_quote "$CURRENT_DIR/scripts/start.sh")"
 toggle_script="$(shell_quote "$CURRENT_DIR/scripts/toggle.sh")"
 jump_script="$(shell_quote "$CURRENT_DIR/scripts/jump.sh")"
+jump_relative_script="$(shell_quote "$CURRENT_DIR/scripts/jump-relative.sh")"
+jump_project_script="$(shell_quote "$CURRENT_DIR/scripts/jump-project.sh")"
 log_path="$(shell_quote "$LOG_PATH")"
 
 hoppers_prefix_key="$(tmux show-option -gqv @hoppers-prefix-key)"
-hoppers_prefix_key="${hoppers_prefix_key:-h}"
-hoppers_focus_key="$(tmux show-option -gqv @hoppers-focus-global-key)"
+hoppers_prefix_key="${hoppers_prefix_key:-Space}"
+hoppers_focus_keys="$(tmux show-option -gqv @hoppers-focus-global-keys)"
+legacy_focus_key="$(tmux show-option -gqv @hoppers-focus-global-key)"
+hoppers_focus_keys="${hoppers_focus_keys:-$legacy_focus_key}"
 hoppers_index_keys="$(tmux show-option -gqv @hoppers-index-keys)"
 
-tmux bind-key "$hoppers_prefix_key" display-menu \
-  "Hoppers sidebar" s "run-shell -b \"$toggle_script >$log_path 2>&1\"" \
-  "Hoppers snapshot" p "display-popup -E \"$start_script snapshot; printf '\\\\nPress enter...'; read -r dummy\"" \
-  "Hoppers jump 1" 1 "run-shell -b \"$jump_script 1 >$log_path 2>&1\"" \
-  "Hoppers jump 2" 2 "run-shell -b \"$jump_script 2 >$log_path 2>&1\"" \
-  "Hoppers jump 3" 3 "run-shell -b \"$jump_script 3 >$log_path 2>&1\""
+tmux bind-key "$hoppers_prefix_key" switch-client -T hoppers \; display-message 'hoppers: s sidebar · j/k agent · S-Up/S-Down project · 1..9 rank'
 
-if [ -n "$hoppers_focus_key" ]; then
-  tmux bind-key -n "$hoppers_focus_key" run-shell -b "$toggle_script >$log_path 2>&1"
-fi
+tmux bind-key -T hoppers s run-shell -b "$toggle_script >$log_path 2>&1"
+tmux bind-key -T hoppers j run-shell -b "$jump_relative_script next >$log_path 2>&1"
+tmux bind-key -T hoppers k run-shell -b "$jump_relative_script prev >$log_path 2>&1"
+tmux bind-key -T hoppers S-Up run-shell -b "$jump_project_script prev >$log_path 2>&1"
+tmux bind-key -T hoppers S-Down run-shell -b "$jump_project_script next >$log_path 2>&1"
+tmux bind-key -n S-Up run-shell -b "$jump_project_script prev >$log_path 2>&1"
+tmux bind-key -n S-Down run-shell -b "$jump_project_script next >$log_path 2>&1"
+tmux bind-key -T hoppers q switch-client -T root
+tmux bind-key -T hoppers Escape switch-client -T root
+
+for idx in 1 2 3 4 5 6 7 8 9; do
+  tmux bind-key -T hoppers "$idx" run-shell -b "$jump_script $idx >$log_path 2>&1"
+done
+
+for key in $hoppers_focus_keys; do
+  tmux bind-key -n "$key" run-shell -b "$toggle_script >$log_path 2>&1"
+done
 
 idx=1
 for key in $hoppers_index_keys; do

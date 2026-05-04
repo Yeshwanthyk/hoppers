@@ -6,6 +6,22 @@ const tmux = @import("tmux.zig");
 
 const vxfw = vaxis.vxfw;
 
+const Theme = struct {
+    base: vaxis.Color = vaxis.Color.rgbFromUint(0x11111b),
+    surface: vaxis.Color = vaxis.Color.rgbFromUint(0x313244),
+    surface2: vaxis.Color = vaxis.Color.rgbFromUint(0x45475a),
+    text: vaxis.Color = vaxis.Color.rgbFromUint(0xcdd6f4),
+    muted: vaxis.Color = vaxis.Color.rgbFromUint(0x6c7086),
+    subtext: vaxis.Color = vaxis.Color.rgbFromUint(0xa6adc8),
+    accent: vaxis.Color = vaxis.Color.rgbFromUint(0xcba6f7),
+    running: vaxis.Color = vaxis.Color.rgbFromUint(0xf9e2af),
+    waiting: vaxis.Color = vaxis.Color.rgbFromUint(0x89b4fa),
+    done: vaxis.Color = vaxis.Color.rgbFromUint(0xa6e3a1),
+    failed: vaxis.Color = vaxis.Color.rgbFromUint(0xf38ba8),
+};
+
+const theme: Theme = .{};
+
 pub fn renderSnapshot(writer: anytype, items: []const model.CockpitItem) !void {
     try writer.writeAll("hoppers · project cockpit\n\n");
     if (items.len == 0) {
@@ -20,8 +36,8 @@ pub fn renderSnapshot(writer: anytype, items: []const model.CockpitItem) !void {
             try writer.print("{s}\n", .{current_project});
         }
         try writer.print(
-            "  {d} {s:<7} {s:<7} - {s}\n",
-            .{ item.rank, item.agent.kind.label(), item.agent.status.label(), item.agent.title },
+            "  {d} {s:<7} {s:<7} {s}\n",
+            .{ item.rank, item.agent.kind.label(), item.project.name, item.project.root },
         );
     }
 }
@@ -58,9 +74,51 @@ pub const CockpitView = struct {
                     ctx.quit = true;
                     return;
                 }
+                if (key.matches('j', .{})) {
+                    try self.jumpRelative(.next);
+                    return;
+                }
+                if (key.matches('k', .{})) {
+                    try self.jumpRelative(.prev);
+                    return;
+                }
+                if (key.matches('r', .{})) {
+                    try self.refresh();
+                    ctx.redraw = true;
+                    return;
+                }
             },
             else => {},
         }
+    }
+
+    const Direction = enum { next, prev };
+
+    fn jumpRelative(self: *CockpitView, direction: Direction) !void {
+        if (self.items.len == 0) return;
+        const controller = tmux.Controller.init(self.allocator);
+        const active_pane_id = controller.activePaneId() catch null;
+        defer if (active_pane_id) |pane_id| self.allocator.free(pane_id);
+
+        var active_index: ?usize = null;
+        if (active_pane_id) |pane_id| {
+            for (self.items, 0..) |item, index| {
+                if (std.mem.eql(u8, item.agent.pane_id, pane_id)) {
+                    active_index = index;
+                    break;
+                }
+            }
+        }
+
+        const target_index = switch (direction) {
+            .next => if (active_index) |index| (index + 1) % self.items.len else 0,
+            .prev => if (active_index) |index| blk: {
+                break :blk if (index == 0) self.items.len - 1 else index - 1;
+            } else self.items.len - 1,
+        };
+        const item = self.items[target_index];
+        try controller.switchSession(item.agent.session_name);
+        try controller.selectPane(item.agent.pane_id);
     }
 
     fn refresh(self: *CockpitView) !void {
@@ -78,56 +136,95 @@ pub const CockpitView = struct {
         const max_size = ctx.max.size();
         const surface = try vxfw.Surface.init(ctx.arena, self.widget(), max_size);
 
+        if (max_size.height == 0 or max_size.width == 0) return surface;
+
+        const footer_visible = max_size.height >= 8;
+        const content_bottom = if (footer_visible) max_size.height - 2 else max_size.height;
         var row: u16 = 0;
-        writeText(surface, 0, row, "hoppers · project cockpit", .{ .bold = true });
+
+        writeText(surface, 1, row, "hoppers", .{ .fg = theme.accent, .bold = true });
+        writeText(surface, 9, row, "· project cockpit", .{ .fg = theme.subtext });
         row += 1;
-        var count_buf: [32]u8 = undefined;
-        const count_text = std.fmt.bufPrint(&count_buf, "agents: {d}", .{self.items.len}) catch "agents: ?";
-        writeText(surface, 0, row, count_text, .{ .dim = true });
+
+        drawRule(surface, row, theme.surface2);
         row += 1;
 
         if (self.items.len == 0) {
-            writeText(surface, 0, row, "No agent panes detected.", .{ .dim = true });
+            if (row < content_bottom) writeText(surface, 1, row, "no agent panes detected", subtleStyle());
+            drawFooter(surface, max_size, footer_visible);
             return surface;
         }
 
         var current_project: []const u8 = "";
-        for (self.items) |item| {
-            if (row >= max_size.height) break;
+        var project_agents: usize = 0;
+        for (self.items, 0..) |item, index| {
             if (!std.mem.eql(u8, current_project, item.project.name)) {
+                if (row + 2 >= content_bottom) break;
                 current_project = item.project.name;
-                writeText(surface, 0, row, current_project, .{ .bold = true });
-                row += 1;
+                project_agents = countProjectAgents(self.items[index..], current_project);
+                row = writeProject(surface, row, current_project, project_agents);
             }
-            if (row >= max_size.height) break;
+            if (row >= content_bottom) break;
             writeItem(surface, row, item);
             row += 1;
         }
 
-        if (max_size.height > 1) {
-            writeText(
-                surface,
-                0,
-                max_size.height - 1,
-                "q quit · rescans every 3s · use tmux h → 1..3 to jump",
-                .{ .dim = true },
-            );
-        }
+        drawFooter(surface, max_size, footer_visible);
         return surface;
     }
 };
 
+fn writeProject(surface: vxfw.Surface, row: u16, name: []const u8, _: usize) u16 {
+    var next = row;
+    if (next > 2) {
+        drawRule(surface, next, theme.surface);
+        next += 1;
+    }
+    writeText(surface, 1, next, name, .{ .fg = theme.text, .bold = true });
+
+    return next + 1;
+}
+
 fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem) void {
-    var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(
-        &buf,
-        "  {d} {s:<7} {s:<7} - {s}",
-        .{ item.rank, item.agent.kind.label(), item.agent.status.label(), item.agent.title },
-    ) catch "  <render error>";
-    writeText(surface, 0, row, text, .{});
+    const status_style = statusStyle(item.agent.status);
+    const kind_style: vaxis.Style = .{ .fg = kindColor(item.agent.kind), .bold = true };
+    const text_style: vaxis.Style = .{ .fg = theme.text };
+
+    writeText(surface, 1, row, rankLabel(item.rank), .{ .fg = theme.accent, .bold = true });
+    writeText(surface, 3, row, statusIcon(item.agent.status), status_style);
+    writeText(surface, 5, row, item.agent.kind.label(), kind_style);
+
+    writeRight(surface, row, item.agent.status.label(), 1, status_style);
+
+    const title_col: u16 = 13;
+    if (surface.size.width > title_col + 8) {
+        writeText(surface, title_col, row, item.project.name, text_style);
+    }
+}
+
+fn drawFooter(surface: vxfw.Surface, size: vxfw.Size, visible: bool) void {
+    if (!visible) return;
+    const row = size.height - 1;
+    drawRule(surface, row - 1, theme.surface2);
+    writeText(surface, 1, row, "j/k agent · S-Up/S-Down project · q", subtleStyle());
+}
+
+fn drawRule(surface: vxfw.Surface, row: u16, color: vaxis.Color) void {
+    var col: u16 = 0;
+    while (col < surface.size.width) : (col += 1) {
+        surface.writeCell(col, row, .{ .char = .{ .grapheme = "─" }, .style = .{ .fg = color } });
+    }
+}
+
+fn writeRight(surface: vxfw.Surface, row: u16, text: []const u8, margin: u16, style: vaxis.Style) void {
+    const width = displayWidth(text);
+    if (width + margin >= surface.size.width) return;
+    const col: u16 = @intCast(surface.size.width - margin - width);
+    writeText(surface, col, row, text, style);
 }
 
 fn writeText(surface: vxfw.Surface, col: u16, row: u16, text: []const u8, style: vaxis.Style) void {
+    if (row >= surface.size.height) return;
     var x = col;
     var iter: std.unicode.Utf8Iterator = .{ .bytes = text, .i = 0 };
     while (iter.nextCodepointSlice()) |grapheme| {
@@ -135,6 +232,73 @@ fn writeText(surface: vxfw.Surface, col: u16, row: u16, text: []const u8, style:
         surface.writeCell(x, row, .{ .char = .{ .grapheme = grapheme }, .style = style });
         x += 1;
     }
+}
+
+fn countProjectAgents(items: []const model.CockpitItem, project_name: []const u8) usize {
+    var count: usize = 0;
+    for (items) |item| {
+        if (!std.mem.eql(u8, item.project.name, project_name)) break;
+        count += 1;
+    }
+    return count;
+}
+
+fn displayWidth(text: []const u8) u16 {
+    var width: u16 = 0;
+    var iter: std.unicode.Utf8Iterator = .{ .bytes = text, .i = 0 };
+    while (iter.nextCodepointSlice()) |_| width += 1;
+    return width;
+}
+
+fn rankLabel(rank: usize) []const u8 {
+    return switch (rank) {
+        1 => "1",
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        5 => "5",
+        6 => "6",
+        7 => "7",
+        8 => "8",
+        9 => "9",
+        else => "+",
+    };
+}
+
+fn statusIcon(status: model.AgentStatus) []const u8 {
+    return switch (status) {
+        .running => "●",
+        .waiting => "◉",
+        .done => "✓",
+        .failed => "✗",
+        .stale => "!",
+        .idle => "○",
+    };
+}
+
+fn statusStyle(status: model.AgentStatus) vaxis.Style {
+    return .{ .fg = switch (status) {
+        .running => theme.running,
+        .waiting => theme.waiting,
+        .done => theme.done,
+        .failed => theme.failed,
+        .stale => theme.running,
+        .idle => theme.muted,
+    } };
+}
+
+fn subtleStyle() vaxis.Style {
+    return .{ .fg = theme.muted };
+}
+
+fn kindColor(kind: model.AgentKind) vaxis.Color {
+    return switch (kind) {
+        .claude => vaxis.Color.rgbFromUint(0xfab387),
+        .codex => vaxis.Color.rgbFromUint(0x89dceb),
+        .pi => vaxis.Color.rgbFromUint(0xcba6f7),
+        .marvin => vaxis.Color.rgbFromUint(0xa6e3a1),
+        .unknown => theme.subtext,
+    };
 }
 
 test "renders empty snapshot" {

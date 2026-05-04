@@ -96,8 +96,16 @@ plugin_case() {
   fi
   local keys
   sleep 1
-  keys="$(tmux -L "$SOCK" list-keys -T prefix h 2>/dev/null || true)"
-  contains "$keys" 'Hoppers sidebar' && ok 'plugin binds menu' || not_ok 'plugin binds menu' "$keys" "$(cat "$LOG" 2>/dev/null || true)"
+  keys="$(tmux -L "$SOCK" list-keys -T prefix Space 2>/dev/null || true)"
+  contains "$keys" 'switch-client -T hoppers' && ok 'plugin binds hoppers table' || not_ok 'plugin binds hoppers table' "$keys" "$(cat "$LOG" 2>/dev/null || true)"
+  keys="$(tmux -L "$SOCK" list-keys -T hoppers s 2>/dev/null || true)"
+  contains "$keys" 'toggle.sh' && ok 'plugin binds table sidebar key' || not_ok 'plugin binds table sidebar key' "$keys"
+  keys="$(tmux -L "$SOCK" list-keys -T hoppers j 2>/dev/null || true)"
+  contains "$keys" 'jump-relative.sh' && ok 'plugin binds table next key' || not_ok 'plugin binds table next key' "$keys"
+  keys="$(tmux -L "$SOCK" list-keys -T hoppers 1 2>/dev/null || true)"
+  contains "$keys" 'jump.sh' && contains "$keys" ' 1 ' && ok 'plugin binds table rank keys' || not_ok 'plugin binds table rank keys' "$keys"
+  keys="$(tmux -L "$SOCK" list-keys -T root S-Down 2>/dev/null || true)"
+  contains "$keys" 'jump-project.sh' && ok 'plugin binds project jump keys' || not_ok 'plugin binds project jump keys' "$keys"
 }
 
 sidebar_case() {
@@ -118,7 +126,10 @@ sidebar_case() {
   capture="$(tmux -L "$SOCK" capture-pane -p -t "$sidebar" -S -80)"
   contains "$capture" 'hoppers · project cockpit' && ok 'sidebar header visible' || not_ok 'sidebar header visible' "$capture"
   contains "$capture" 'claude' && ok 'sidebar detects claude' || not_ok 'sidebar detects claude' "$capture"
+  contains "$capture" '●' && ok 'sidebar shows status icons' || not_ok 'sidebar shows status icons' "$capture"
+  contains "$capture" 'S-Up/S-Down project' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
   not_contains "$capture" '�' && ok 'sidebar has no replacement chars' || not_ok 'sidebar has no replacement chars' "$capture"
+  not_contains "$capture" '^[' && ok 'sidebar has no raw escape text' || not_ok 'sidebar has no raw escape text' "$capture"
 }
 
 jump_case() {

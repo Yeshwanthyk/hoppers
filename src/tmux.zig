@@ -41,6 +41,13 @@ pub const Controller = struct {
         return panes.toOwnedSlice(self.allocator);
     }
 
+    pub fn activePaneId(self: Controller) ![]u8 {
+        const output = try self.run(&.{ "tmux", "display-message", "-p", "#{pane_id}" });
+        defer self.allocator.free(output);
+        const trimmed = std.mem.trim(u8, output, " \n\r\t");
+        return self.allocator.dupe(u8, trimmed);
+    }
+
     pub fn selectPane(self: Controller, pane_id: []const u8) !void {
         const window_id = try self.run(&.{ "tmux", "display-message", "-p", "-t", pane_id, "#{window_id}" });
         defer self.allocator.free(window_id);

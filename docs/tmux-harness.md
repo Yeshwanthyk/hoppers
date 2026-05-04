@@ -38,10 +38,10 @@ tmux -L <socket-name> attach
 - fake agent sessions using deterministic start commands (`claude`, `codex`, `pi`, `marvin`)
 - `hoppers snapshot` textual output against the isolated tmux socket
 - plugin sourcing via `hoppers.tmux`
-- installed tmux bindings via `list-keys`
+- installed tmux menu and global bindings via `list-keys`
 - sidebar toggle with an explicit target window for detached test servers
 - sidebar liveness after multiple seconds
-- sidebar visual output via `capture-pane`
+- sidebar visual output via `capture-pane` including header, agents, status icons, footer, and raw escape-text checks
 - jump behavior by asserting active pane changes to the ranked agent pane
 - mojibake/replacement-character checks (`�` must not appear)
 
