@@ -35,7 +35,7 @@ tmux -L <socket-name> attach
 ## What the harness covers
 
 - `zig build`
-- fake agent sessions using deterministic start commands (`claude`, `codex`, `pi`, `marvin`)
+- fake agent sessions using deterministic start commands (`claude`, `codex`, `opencode`, `pi`, `marvin`)
 - `hoppers snapshot` textual output against the isolated tmux socket
 - plugin sourcing via `hoppers.tmux`
 - installed tmux menu and global bindings via `list-keys`

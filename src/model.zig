@@ -3,6 +3,7 @@ const std = @import("std");
 pub const AgentKind = enum {
     claude,
     codex,
+    opencode,
     pi,
     marvin,
     unknown,
@@ -11,6 +12,7 @@ pub const AgentKind = enum {
         return switch (self) {
             .claude => "claude",
             .codex => "codex",
+            .opencode => "opencode",
             .pi => "pi",
             .marvin => "marvin",
             .unknown => "unknown",
@@ -85,6 +87,7 @@ pub fn detectAgentKind(command: []const u8, start_command: []const u8, title: []
     for (haystacks) |haystack| {
         if (containsToken(haystack, "claude")) return .claude;
         if (containsToken(haystack, "codex")) return .codex;
+        if (containsToken(haystack, "opencode")) return .opencode;
         if (containsToken(haystack, "pi")) return .pi;
         if (containsToken(haystack, "marvin")) return .marvin;
     }
@@ -102,6 +105,7 @@ fn containsToken(haystack: []const u8, token: []const u8) bool {
 test "detects known agents" {
     try std.testing.expectEqual(AgentKind.claude, detectAgentKind("claude", "", ""));
     try std.testing.expectEqual(AgentKind.codex, detectAgentKind("node", "", "Codex task"));
+    try std.testing.expectEqual(AgentKind.opencode, detectAgentKind("node", "/Users/yesh/.opencode/bin/opencode", ""));
     try std.testing.expectEqual(AgentKind.marvin, detectAgentKind("sleep", "exec -a marvin sleep 600", ""));
     try std.testing.expectEqual(AgentKind.unknown, detectAgentKind("zsh", "", "editor"));
 }

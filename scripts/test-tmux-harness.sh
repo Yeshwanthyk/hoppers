@@ -108,6 +108,7 @@ setup_agents() {
   start_tmux
   spawn_agent claude 'Claude task'
   spawn_agent codex 'Codex task'
+  spawn_agent opencode 'opencode task'
   spawn_agent pi 'Pi task'
   spawn_agent marvin 'Marvin task'
 }
@@ -131,6 +132,7 @@ snapshot_case() {
   contains "$output" 'hoppers · project cockpit' && ok 'snapshot header' || not_ok 'snapshot header' "$output"
   contains "$output" 'claude' && ok 'snapshot detects claude' || not_ok 'snapshot detects claude' "$output"
   contains "$output" 'codex' && ok 'snapshot detects codex' || not_ok 'snapshot detects codex' "$output"
+  contains "$output" 'opencode' && ok 'snapshot detects opencode' || not_ok 'snapshot detects opencode' "$output"
   not_contains "$output" '�' && ok 'snapshot has no replacement chars' || not_ok 'snapshot has no replacement chars' "$output"
 }
 

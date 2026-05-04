@@ -599,6 +599,7 @@ fn kindColor(kind: model.AgentKind) vaxis.Color {
     return switch (kind) {
         .claude => vaxis.Color.rgbFromUint(0xfab387),
         .codex => vaxis.Color.rgbFromUint(0x89dceb),
+        .opencode => vaxis.Color.rgbFromUint(0xf9e2af),
         .pi => vaxis.Color.rgbFromUint(0xcba6f7),
         .marvin => vaxis.Color.rgbFromUint(0xa6e3a1),
         .unknown => theme.subtext,
