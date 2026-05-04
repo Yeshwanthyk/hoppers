@@ -209,18 +209,20 @@ fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected:
     const status_style = statusStyle(item.agent.status);
     const kind_style: vaxis.Style = .{ .fg = kindColor(item.agent.kind), .bold = true };
     const text_style: vaxis.Style = .{ .fg = theme.text };
-    const cursor = if (selected) "›" else " ";
+    const rank_style: vaxis.Style = if (selected)
+        .{ .fg = theme.base, .bg = theme.accent, .bold = true }
+    else
+        .{ .fg = theme.accent, .bold = true };
 
-    writeText(surface, 0, row, cursor, .{ .fg = theme.accent, .bold = true });
-    writeText(surface, 1, row, rankLabel(item.rank), .{ .fg = theme.accent, .bold = true });
+    writeText(surface, 1, row, rankLabel(item.rank), rank_style);
     writeText(surface, 3, row, statusIcon(item.agent.status), status_style);
     writeText(surface, 5, row, item.agent.kind.label(), kind_style);
 
-    const title_col: u16 = 13;
+    const title_col: u16 = 9;
     if (surface.size.width > 42) {
         writeRight(surface, row, item.agent.status.label(), 1, status_style);
-        writeText(surface, title_col, row, item.agent.title, text_style);
-    } else if (surface.size.width > 28) {
+        if (item.agent.title.len > 0) writeText(surface, title_col, row, item.agent.title, text_style);
+    } else if (surface.size.width > 28 and item.agent.title.len > 0) {
         writeText(surface, title_col, row, item.agent.title, text_style);
     }
 }

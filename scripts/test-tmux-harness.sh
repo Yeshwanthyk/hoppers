@@ -126,7 +126,7 @@ sidebar_case() {
   contains "$capture" 'hoppers · project cockpit' && ok 'sidebar header visible' || not_ok 'sidebar header visible' "$capture"
   contains "$capture" 'claude' && ok 'sidebar detects claude' || not_ok 'sidebar detects claude' "$capture"
   contains "$capture" '●' && ok 'sidebar shows status icons' || not_ok 'sidebar shows status icons' "$capture"
-  contains "$capture" '›' && ok 'sidebar shows selection' || not_ok 'sidebar shows selection' "$capture"
+  contains "$capture" '1 ●' && ok 'sidebar shows selection row' || not_ok 'sidebar shows selection row' "$capture"
   contains "$capture" 'S-Up/S-Down project' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
   target_window="$(tmux -L "$SOCK" display-message -p -t hoppers-other:main '#{window_id}')"
   HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" sync >"$LOG" 2>&1

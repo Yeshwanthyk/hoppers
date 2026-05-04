@@ -51,6 +51,13 @@ case "$command" in
     open_sidebar "$current_window"
     ;;
   open-focus)
+    sidebar_pane="$(find_sidebar "$current_window")"
+    active_pane="$(tmux display-message -p -t "$current_window" '#{pane_id}')"
+    if [ -n "$sidebar_pane" ] && [ "$active_pane" = "$sidebar_pane" ]; then
+      tmux set-option -gq "$STATE_OPTION" off
+      close_sidebar "$current_window"
+      exit 0
+    fi
     tmux set-option -gq "$STATE_OPTION" on
     open_sidebar "$current_window"
     sidebar_pane="$(find_sidebar "$current_window")"

@@ -38,7 +38,8 @@ fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.
     const id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ kind.label(), pane.pane_id });
     errdefer allocator.free(id);
 
-    const title = activityTitle(pane);
+    const raw_title = activityTitle(pane);
+    const title = trimActivityTitle(raw_title, project.name);
     const status = inferStatus(title);
     const owned_session_name = try allocator.dupe(u8, pane.session_name);
     errdefer allocator.free(owned_session_name);
@@ -70,12 +71,22 @@ fn activityTitle(pane: model.TmuxPane) []const u8 {
     return pane.current_command;
 }
 
+fn trimActivityTitle(title: []const u8, project_name: []const u8) []const u8 {
+    var last_part = title;
+    var parts = std.mem.splitSequence(u8, title, "·");
+    while (parts.next()) |part| last_part = std.mem.trim(u8, part, " \t");
+    if (last_part.len > 0 and !std.mem.eql(u8, last_part, project_name)) return last_part;
+    if (std.mem.eql(u8, title, project_name)) return "";
+    return title;
+}
+
 fn inferStatus(title: []const u8) model.AgentStatus {
     var lower_buf: [256]u8 = undefined;
     const n = @min(title.len, lower_buf.len);
     const lower = lower_buf[0..n];
     for (title[0..n], 0..) |char, i| lower[i] = std.ascii.toLower(char);
     if (contains(lower, "error") or contains(lower, "failed")) return .failed;
+    if (contains(lower, "complete") or contains(lower, "done")) return .done;
     if (contains(lower, "ready") or contains(lower, "waiting")) return .waiting;
     if (contains(lower, "executing") or contains(lower, "running")) return .running;
     return .running;
