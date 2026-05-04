@@ -22,6 +22,28 @@ const Theme = struct {
 
 const theme: Theme = .{};
 
+const FilterMode = enum {
+    all,
+    hot,
+    active,
+
+    fn next(self: FilterMode) FilterMode {
+        return switch (self) {
+            .all => .hot,
+            .hot => .active,
+            .active => .all,
+        };
+    }
+
+    fn label(self: FilterMode) []const u8 {
+        return switch (self) {
+            .all => "all",
+            .hot => "hot",
+            .active => "active",
+        };
+    }
+};
+
 pub fn renderSnapshot(writer: anytype, items: []const model.CockpitItem) !void {
     try writer.writeAll("hoppers · project cockpit\n\n");
     if (items.len == 0) {
@@ -47,6 +69,7 @@ pub const CockpitView = struct {
     items: []model.CockpitItem,
     refresh_ms: u32 = 3000,
     selected_rank: usize = 1,
+    filter: FilterMode = .all,
 
     pub fn deinit(self: *CockpitView) void {
         discovery.freeCockpitItems(self.allocator, self.items);
@@ -89,6 +112,12 @@ pub const CockpitView = struct {
                     try self.jumpSelected();
                     return;
                 }
+                if (key.matches('f', .{})) {
+                    self.filter = self.filter.next();
+                    self.ensureVisibleSelection();
+                    ctx.redraw = true;
+                    return;
+                }
                 if (key.codepoint >= '1' and key.codepoint <= '9') {
                     self.selectRank(@intCast(key.codepoint - '0'));
                     ctx.redraw = true;
@@ -107,18 +136,33 @@ pub const CockpitView = struct {
     const Direction = enum { next, prev };
 
     fn moveSelection(self: *CockpitView, direction: Direction) void {
-        if (self.items.len == 0) return;
-        const current_index = self.selectedIndex() orelse 0;
-        const next_index = switch (direction) {
-            .next => (current_index + 1) % self.items.len,
-            .prev => if (current_index == 0) self.items.len - 1 else current_index - 1,
-        };
-        self.selected_rank = self.items[next_index].rank;
+        const current_index = self.selectedIndex() orelse self.firstVisibleIndex() orelse return;
+        var next_index = current_index;
+        while (true) {
+            next_index = switch (direction) {
+                .next => (next_index + 1) % self.items.len,
+                .prev => if (next_index == 0) self.items.len - 1 else next_index - 1,
+            };
+            if (self.isVisible(self.items[next_index])) {
+                self.selected_rank = self.items[next_index].rank;
+                return;
+            }
+            if (next_index == current_index) return;
+        }
+    }
+
+    fn selectPaneRank(self: *CockpitView, pane_id: []const u8) void {
+        for (self.items) |item| {
+            if (std.mem.eql(u8, item.agent.pane_id, pane_id)) {
+                self.selected_rank = item.rank;
+                return;
+            }
+        }
     }
 
     fn selectRank(self: *CockpitView, rank: usize) void {
         for (self.items) |item| {
-            if (item.rank == rank) {
+            if (item.rank == rank and self.isVisible(item)) {
                 self.selected_rank = rank;
                 return;
             }
@@ -135,9 +179,29 @@ pub const CockpitView = struct {
 
     fn selectedIndex(self: *CockpitView) ?usize {
         for (self.items, 0..) |item, index| {
-            if (item.rank == self.selected_rank) return index;
+            if (item.rank == self.selected_rank and self.isVisible(item)) return index;
         }
         return null;
+    }
+
+    fn firstVisibleIndex(self: *CockpitView) ?usize {
+        for (self.items, 0..) |item, index| {
+            if (self.isVisible(item)) return index;
+        }
+        return null;
+    }
+
+    fn ensureVisibleSelection(self: *CockpitView) void {
+        if (self.selectedIndex() != null) return;
+        if (self.firstVisibleIndex()) |index| self.selected_rank = self.items[index].rank;
+    }
+
+    fn isVisible(self: *CockpitView, item: model.CockpitItem) bool {
+        return switch (self.filter) {
+            .all => true,
+            .hot => isHot(item.agent.status),
+            .active => isActive(item.agent.status),
+        };
     }
 
     fn refresh(self: *CockpitView) !void {
@@ -145,10 +209,17 @@ pub const CockpitView = struct {
         const panes = try controller.listPanes();
         defer controller.freePanes(panes);
 
+        const active_pane_id = controller.activePaneId() catch |err| switch (err) {
+            error.CommandFailed => null,
+            else => return err,
+        };
+        defer if (active_pane_id) |pane_id| self.allocator.free(pane_id);
+
         const next_items = try discovery.buildCockpit(self.allocator, panes);
         discovery.freeCockpitItems(self.allocator, self.items);
         self.items = next_items;
-        if (self.selectedIndex() == null and self.items.len > 0) self.selected_rank = self.items[0].rank;
+        if (active_pane_id) |pane_id| self.selectPaneRank(pane_id);
+        self.ensureVisibleSelection();
     }
 
     fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -161,7 +232,7 @@ pub const CockpitView = struct {
 
         const footer_visible = max_size.height >= 8;
         const content_bottom = if (footer_visible) max_size.height - 2 else max_size.height;
-        var row: u16 = 0;
+        var row: u16 = drawHeader(surface, self.items, self.filter);
 
         if (self.items.len == 0) {
             if (row < content_bottom) writeText(surface, 1, row, "no agent panes detected", subtleStyle());
@@ -170,37 +241,67 @@ pub const CockpitView = struct {
         }
 
         var current_project: []const u8 = "";
-        var project_agents: usize = 0;
+        var visible_items: usize = 0;
         for (self.items, 0..) |item, index| {
+            if (!self.isVisible(item)) continue;
+            visible_items += 1;
             if (!std.mem.eql(u8, current_project, item.project.name)) {
                 if (row + 2 >= content_bottom) break;
                 current_project = item.project.name;
-                project_agents = countProjectAgents(self.items[index..], current_project);
-                row = writeProject(surface, row, current_project, project_agents);
+                const stats = projectStats(self.items[index..], current_project, self.filter);
+                row = writeProject(surface, row, current_project, stats);
             }
             if (row >= content_bottom) break;
             const selected = item.rank == self.selected_rank;
             writeItem(surface, row, item, selected);
             row += 1;
-            if (selected and row < content_bottom and item.agent.title.len > 0 and max_size.width > 32) {
-                writeText(surface, 3, row, "↳", subtleStyle());
-                writeTextTruncated(surface, 5, row, item.agent.title, max_size.width - 6, subtleStyle());
-                row += 1;
-            }
         }
+
+        if (visible_items == 0) {
+            if (row < content_bottom) writeText(surface, 1, row, "no agents match filter", subtleStyle());
+            drawFooter(surface, max_size, footer_visible);
+            return surface;
+        }
+
+        if (row + 4 < content_bottom) drawSelectedDetail(surface, row + 1, self.selectedItem());
 
         drawFooter(surface, max_size, footer_visible);
         return surface;
     }
+
+    fn selectedItem(self: *CockpitView) ?model.CockpitItem {
+        const index = self.selectedIndex() orelse return null;
+        return self.items[index];
+    }
 };
 
-fn writeProject(surface: vxfw.Surface, row: u16, name: []const u8, _: usize) u16 {
+fn drawHeader(surface: vxfw.Surface, items: []const model.CockpitItem, filter: FilterMode) u16 {
+    const stats = listStats(items);
+    writeText(surface, 1, 0, "hoppers", .{ .fg = theme.text, .bold = true });
+    writeRight(surface, 0, filter.label(), 1, .{ .fg = theme.accent, .bold = true });
+
+    var buf: [64]u8 = undefined;
+    const summary = std.fmt.bufPrint(&buf, "{d} agents  !{d} x{d} >{d}", .{
+        stats.total,
+        stats.waiting,
+        stats.failed,
+        stats.running,
+    }) catch "";
+    if (innerWidth(surface)) |width| writeTextTruncated(surface, 1, 1, summary, width, subtleStyle());
+    drawRule(surface, 2, theme.surface2);
+    return 3;
+}
+
+fn writeProject(surface: vxfw.Surface, row: u16, name: []const u8, stats: StatusCounts) u16 {
     var next = row;
-    if (next > 2) {
+    if (next > 3) {
         drawRule(surface, next, theme.surface);
         next += 1;
     }
     writeText(surface, 1, next, name, .{ .fg = theme.text, .bold = true });
+    var buf: [48]u8 = undefined;
+    const heat = heatLabel(&buf, stats);
+    if (heat.len > 0) writeRight(surface, next, heat, 1, subtleStyle());
 
     return next + 1;
 }
@@ -216,20 +317,37 @@ fn writeItem(surface: vxfw.Surface, row: u16, item: model.CockpitItem, selected:
 
     writeText(surface, 1, row, rankLabel(item.rank), rank_style);
     writeText(surface, 3, row, item.agent.kind.label(), kind_style);
-    writeText(surface, 7, row, statusIcon(item.agent.status), status_style);
+    writeText(surface, 10, row, statusIcon(item.agent.status), status_style);
+    writeText(surface, 13, row, statusReason(item.agent.status), status_style);
 
-    const title_col: u16 = 10;
-    if (surface.size.width > 42) {
-        writeRight(surface, row, item.agent.status.label(), 1, status_style);
-        const status_width = displayWidth(item.agent.status.label()) + 2;
-        if (item.agent.title.len > 0 and surface.size.width > title_col + status_width) {
-            const title_width = surface.size.width - title_col - status_width;
-            writeTextTruncated(surface, title_col, row, item.agent.title, title_width, text_style);
-        }
-    } else if (surface.size.width > title_col and item.agent.title.len > 0) {
+    const title_col: u16 = 22;
+    if (surface.size.width > title_col and item.agent.title.len > 0) {
         const title_width = surface.size.width - title_col - 1;
         writeTextTruncated(surface, title_col, row, item.agent.title, title_width, text_style);
     }
+}
+
+fn drawSelectedDetail(surface: vxfw.Surface, row: u16, item: ?model.CockpitItem) void {
+    const selected = item orelse return;
+    drawRule(surface, row, theme.surface2);
+    if (row + 1 >= surface.size.height) return;
+    writeText(surface, 1, row + 1, "detail", .{ .fg = theme.subtext, .bold = true });
+
+    if (row + 2 >= surface.size.height) return;
+    const width = innerWidth(surface) orelse return;
+    writeTextTruncated(surface, 1, row + 2, selected.project.root, width, subtleStyle());
+
+    if (row + 3 >= surface.size.height) return;
+    var target_buf: [96]u8 = undefined;
+    const target = std.fmt.bufPrint(
+        &target_buf,
+        "pane {s}  session {s}  window {s}",
+        .{ selected.agent.pane_id, selected.agent.session_name, selected.agent.window_id },
+    ) catch "";
+    writeTextTruncated(surface, 1, row + 3, target, width, subtleStyle());
+
+    if (row + 4 >= surface.size.height or selected.agent.title.len == 0) return;
+    writeTextTruncated(surface, 1, row + 4, selected.agent.title, width, subtleStyle());
 }
 
 fn clearSurface(surface: vxfw.Surface) void {
@@ -246,7 +364,7 @@ fn drawFooter(surface: vxfw.Surface, size: vxfw.Size, visible: bool) void {
     if (!visible) return;
     const row = size.height - 1;
     drawRule(surface, row - 1, theme.surface2);
-    writeText(surface, 1, row, "j/k select · enter jump · q", subtleStyle());
+    writeText(surface, 1, row, "j/k select · enter jump · f filter · r refresh · q", subtleStyle());
 }
 
 fn drawRule(surface: vxfw.Surface, row: u16, color: vaxis.Color) void {
@@ -298,13 +416,75 @@ fn writeText(surface: vxfw.Surface, col: u16, row: u16, text: []const u8, style:
     }
 }
 
-fn countProjectAgents(items: []const model.CockpitItem, project_name: []const u8) usize {
-    var count: usize = 0;
+fn innerWidth(surface: vxfw.Surface) ?u16 {
+    if (surface.size.width <= 2) return null;
+    return surface.size.width - 2;
+}
+
+const StatusCounts = struct {
+    total: usize = 0,
+    waiting: usize = 0,
+    failed: usize = 0,
+    running: usize = 0,
+    done: usize = 0,
+};
+
+fn listStats(items: []const model.CockpitItem) StatusCounts {
+    var stats: StatusCounts = .{};
+    for (items) |item| addStatus(&stats, item.agent.status);
+    return stats;
+}
+
+fn projectStats(items: []const model.CockpitItem, project_name: []const u8, filter: FilterMode) StatusCounts {
+    var stats: StatusCounts = .{};
     for (items) |item| {
         if (!std.mem.eql(u8, item.project.name, project_name)) break;
-        count += 1;
+        if (!statusVisible(filter, item.agent.status)) continue;
+        addStatus(&stats, item.agent.status);
     }
-    return count;
+    return stats;
+}
+
+fn addStatus(stats: *StatusCounts, status: model.AgentStatus) void {
+    stats.total += 1;
+    switch (status) {
+        .waiting => stats.waiting += 1,
+        .failed => stats.failed += 1,
+        .running => stats.running += 1,
+        .done => stats.done += 1,
+        .stale, .idle => {},
+    }
+}
+
+fn heatLabel(buf: []u8, stats: StatusCounts) []const u8 {
+    if (stats.total == 0) return "";
+    if (stats.waiting > 0 or stats.failed > 0 or stats.running > 0) {
+        return std.fmt.bufPrint(buf, "!{d} x{d} >{d}", .{ stats.waiting, stats.failed, stats.running }) catch "";
+    }
+    if (stats.done > 0) return std.fmt.bufPrint(buf, "v{d}", .{stats.done}) catch "";
+    return "idle";
+}
+
+fn statusVisible(filter: FilterMode, status: model.AgentStatus) bool {
+    return switch (filter) {
+        .all => true,
+        .hot => isHot(status),
+        .active => isActive(status),
+    };
+}
+
+fn isHot(status: model.AgentStatus) bool {
+    return switch (status) {
+        .waiting, .failed, .done, .stale => true,
+        .running, .idle => false,
+    };
+}
+
+fn isActive(status: model.AgentStatus) bool {
+    return switch (status) {
+        .waiting, .running => true,
+        .failed, .done, .stale, .idle => false,
+    };
 }
 
 fn displayWidth(text: []const u8) u16 {
@@ -332,11 +512,22 @@ fn rankLabel(rank: usize) []const u8 {
 fn statusIcon(status: model.AgentStatus) []const u8 {
     return switch (status) {
         .running => "|>",
-        .waiting => "?",
-        .done => "✓",
-        .failed => "!",
+        .waiting => "!",
+        .done => "v",
+        .failed => "x",
         .stale => "~",
         .idle => "·",
+    };
+}
+
+fn statusReason(status: model.AgentStatus) []const u8 {
+    return switch (status) {
+        .idle => "idle",
+        .running => "active",
+        .waiting => "input",
+        .done => "done",
+        .failed => "failed",
+        .stale => "stalled",
     };
 }
 

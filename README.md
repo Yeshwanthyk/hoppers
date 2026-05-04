@@ -59,6 +59,7 @@ j / k               move selection
 1..9                select ranked agent
 Enter               jump to selected agent
 r                   refresh
+f                   cycle filter: all, hot, active
 q                   close sidebar
 ```
 
