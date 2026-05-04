@@ -49,6 +49,7 @@ start_tmux() {
   tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
   : > "$TMP/panes.env"
   tmux -L "$SOCK" -f /dev/null new-session -d -s "$SESSION" -n main -c "$ROOT" 'exec zsh'
+  tmux -L "$SOCK" new-session -d -s hoppers-other -n main -c "$ROOT" 'exec zsh'
   TMUX_SOCKET="$(tmux -L "$SOCK" display-message -p '#{socket_path}')"
   TMUX_ENV="$TMUX_SOCKET,0,0"
   tmux -L "$SOCK" set-environment -g HOPPERS_TMUX_LOG "$LOG"
@@ -128,6 +129,10 @@ sidebar_case() {
   contains "$capture" 'claude' && ok 'sidebar detects claude' || not_ok 'sidebar detects claude' "$capture"
   contains "$capture" '●' && ok 'sidebar shows status icons' || not_ok 'sidebar shows status icons' "$capture"
   contains "$capture" 'S-Up/S-Down project' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
+  target_window="$(tmux -L "$SOCK" display-message -p -t hoppers-other:main '#{window_id}')"
+  HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" sync >"$LOG" 2>&1
+  sleep 1
+  tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}' | grep -Eq 'hoppers-sidebar|start\.sh.*sidebar' && ok 'sidebar follows session' || not_ok 'sidebar follows session' "$(tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}')" "$(cat "$LOG" 2>/dev/null || true)"
   not_contains "$capture" '�' && ok 'sidebar has no replacement chars' || not_ok 'sidebar has no replacement chars' "$capture"
   not_contains "$capture" '^[' && ok 'sidebar has no raw escape text' || not_ok 'sidebar has no raw escape text' "$capture"
 }

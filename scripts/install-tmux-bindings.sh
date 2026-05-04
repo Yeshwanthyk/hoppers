@@ -9,6 +9,7 @@ shell_quote() {
 }
 
 toggle_script="$(shell_quote "$CURRENT_DIR/scripts/toggle.sh")"
+sidebar_script="$(shell_quote "$CURRENT_DIR/scripts/sidebar.sh")"
 jump_script="$(shell_quote "$CURRENT_DIR/scripts/jump.sh")"
 jump_relative_script="$(shell_quote "$CURRENT_DIR/scripts/jump-relative.sh")"
 jump_project_script="$(shell_quote "$CURRENT_DIR/scripts/jump-project.sh")"
@@ -32,6 +33,8 @@ tmux bind-key -n S-Up run-shell -b "$jump_project_script prev >$log_path 2>&1"
 tmux bind-key -n S-Down run-shell -b "$jump_project_script next >$log_path 2>&1"
 tmux bind-key -T hoppers q switch-client -T root
 tmux bind-key -T hoppers Escape switch-client -T root
+
+tmux set-hook -g client-session-changed "run-shell -b \"$sidebar_script sync >$log_path 2>&1\""
 
 for idx in 1 2 3 4 5 6 7 8 9; do
   tmux bind-key -T hoppers "$idx" run-shell -b "$jump_script $idx >$log_path 2>&1"
