@@ -6,13 +6,15 @@ const tmux = @import("tmux.zig");
 
 pub fn buildCockpit(allocator: std.mem.Allocator, panes: []const model.TmuxPane) ![]model.CockpitItem {
     var items: std.ArrayList(model.CockpitItem) = .empty;
+    var detector: PaneAgentDetector = .{ .allocator = allocator };
+    defer detector.deinit();
     errdefer {
         for (items.items) |item| freeCockpitItem(allocator, item);
         items.deinit(allocator);
     }
 
     for (panes) |pane| {
-        const item = (try buildCockpitItem(allocator, pane)) orelse continue;
+        const item = (try buildCockpitItem(allocator, &detector, pane)) orelse continue;
         items.append(allocator, item) catch |err| {
             freeCockpitItem(allocator, item);
             return err;
@@ -29,8 +31,12 @@ pub fn freeCockpitItems(allocator: std.mem.Allocator, items: []model.CockpitItem
     allocator.free(items);
 }
 
-fn buildCockpitItem(allocator: std.mem.Allocator, pane: model.TmuxPane) !?model.CockpitItem {
-    const kind = detectPaneAgentKind(allocator, pane);
+fn buildCockpitItem(
+    allocator: std.mem.Allocator,
+    detector: *PaneAgentDetector,
+    pane: model.TmuxPane,
+) !?model.CockpitItem {
+    const kind = detector.detectPaneAgentKind(pane);
     if (kind == .unknown) return null;
 
     const project = try projects.inferProject(allocator, pane.current_path);
@@ -122,56 +128,67 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
-fn detectPaneAgentKind(allocator: std.mem.Allocator, pane: model.TmuxPane) model.AgentKind {
-    const direct = model.detectAgentKind(pane.current_command, pane.start_command, pane.title);
-    if (direct != .unknown) return direct;
-    return detectDescendantAgentKind(allocator, pane.pane_pid) catch .unknown;
-}
+const PaneAgentDetector = struct {
+    allocator: std.mem.Allocator,
+    processes: ?[]ProcessInfo = null,
+    ps_output: ?[]u8 = null,
 
-fn detectDescendantAgentKind(allocator: std.mem.Allocator, root_pid: u32) !model.AgentKind {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "ps", "-axo", "pid=,ppid=,comm=" },
-        .max_output_bytes = 1024 * 1024,
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) return .unknown;
-
-    var processes: std.ArrayList(ProcessInfo) = .empty;
-    defer processes.deinit(allocator);
-
-    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
-    while (lines.next()) |line| {
-        const process = parseProcessLine(line) orelse continue;
-        try processes.append(allocator, process);
+    fn deinit(self: *PaneAgentDetector) void {
+        if (self.processes) |processes| self.allocator.free(processes);
+        if (self.ps_output) |ps_output| self.allocator.free(ps_output);
+        self.* = undefined;
     }
 
-    var changed = true;
-    while (changed) {
-        changed = false;
-        for (processes.items) |*process| {
-            if (process.descendant) continue;
-            if (process.ppid == root_pid or parentIsDescendant(processes.items, process.ppid)) {
-                process.descendant = true;
-                changed = true;
-            }
+    fn detectPaneAgentKind(self: *PaneAgentDetector, pane: model.TmuxPane) model.AgentKind {
+        const direct = model.detectAgentKind(pane.current_command, pane.start_command, pane.title);
+        if (direct != .unknown) return direct;
+        return self.detectDescendantAgentKind(pane.pane_pid) catch .unknown;
+    }
+
+    fn detectDescendantAgentKind(self: *PaneAgentDetector, root_pid: u32) !model.AgentKind {
+        const processes = try self.loadProcesses();
+        for (processes) |process| {
+            if (!isDescendantProcess(processes, process, root_pid)) continue;
+            const kind = model.detectAgentKind(process.command, "", "");
+            if (kind != .unknown) return kind;
         }
+        return .unknown;
     }
 
-    for (processes.items) |process| {
-        if (!process.descendant) continue;
-        const kind = model.detectAgentKind(process.command, "", "");
-        if (kind != .unknown) return kind;
+    fn loadProcesses(self: *PaneAgentDetector) ![]const ProcessInfo {
+        if (self.processes) |processes| return processes;
+        const result = try std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{ "ps", "-axo", "pid=,ppid=,comm=" },
+            .max_output_bytes = 1024 * 1024,
+        });
+        defer self.allocator.free(result.stderr);
+        if (result.term != .Exited or result.term.Exited != 0) {
+            self.allocator.free(result.stdout);
+            self.processes = try self.allocator.alloc(ProcessInfo, 0);
+            return self.processes.?;
+        }
+        errdefer self.allocator.free(result.stdout);
+
+        var processes: std.ArrayList(ProcessInfo) = .empty;
+        errdefer processes.deinit(self.allocator);
+
+        var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+        while (lines.next()) |line| {
+            const process = parseProcessLine(line) orelse continue;
+            try processes.append(self.allocator, process);
+        }
+
+        self.processes = try processes.toOwnedSlice(self.allocator);
+        self.ps_output = result.stdout;
+        return self.processes.?;
     }
-    return .unknown;
-}
+};
 
 const ProcessInfo = struct {
     pid: u32,
     ppid: u32,
     command: []const u8,
-    descendant: bool = false,
 };
 
 fn parseProcessLine(line: []const u8) ?ProcessInfo {
@@ -186,11 +203,21 @@ fn parseProcessLine(line: []const u8) ?ProcessInfo {
     };
 }
 
-fn parentIsDescendant(processes: []const ProcessInfo, ppid: u32) bool {
-    for (processes) |process| {
-        if (process.pid == ppid) return process.descendant;
+fn isDescendantProcess(processes: []const ProcessInfo, process: ProcessInfo, root_pid: u32) bool {
+    var ppid = process.ppid;
+    var depth: usize = 0;
+    while (ppid != 0 and depth < processes.len) : (depth += 1) {
+        if (ppid == root_pid) return true;
+        ppid = parentPid(processes, ppid) orelse return false;
     }
     return false;
+}
+
+fn parentPid(processes: []const ProcessInfo, pid: u32) ?u32 {
+    for (processes) |process| {
+        if (process.pid == pid) return process.ppid;
+    }
+    return null;
 }
 
 fn freeCockpitItem(allocator: std.mem.Allocator, item: model.CockpitItem) void {
