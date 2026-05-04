@@ -11,7 +11,7 @@ shell_quote() {
 toggle_script="$(shell_quote "$CURRENT_DIR/scripts/toggle.sh")"
 sidebar_script="$(shell_quote "$CURRENT_DIR/scripts/sidebar.sh")"
 jump_script="$(shell_quote "$CURRENT_DIR/scripts/jump.sh")"
-jump_project_script="$(shell_quote "$CURRENT_DIR/scripts/jump-project.sh")"
+jump_relative_script="$(shell_quote "$CURRENT_DIR/scripts/jump-relative.sh")"
 log_path="$(shell_quote "$LOG_PATH")"
 
 hoppers_prefix_key="$(tmux show-option -gqv @hoppers-prefix-key)"
@@ -20,18 +20,22 @@ hoppers_focus_keys="$(tmux show-option -gqv @hoppers-focus-global-keys)"
 legacy_focus_key="$(tmux show-option -gqv @hoppers-focus-global-key)"
 hoppers_focus_keys="${hoppers_focus_keys:-$legacy_focus_key}"
 hoppers_index_keys="$(tmux show-option -gqv @hoppers-index-keys)"
-hoppers_project_prev_key="$(tmux show-option -gqv @hoppers-project-prev-key)"
-hoppers_project_prev_key="${hoppers_project_prev_key:-S-Up}"
-hoppers_project_next_key="$(tmux show-option -gqv @hoppers-project-next-key)"
-hoppers_project_next_key="${hoppers_project_next_key:-S-Down}"
+hoppers_agent_prev_key="$(tmux show-option -gqv @hoppers-agent-prev-key)"
+legacy_project_prev_key="$(tmux show-option -gqv @hoppers-project-prev-key)"
+hoppers_agent_prev_key="${hoppers_agent_prev_key:-$legacy_project_prev_key}"
+hoppers_agent_prev_key="${hoppers_agent_prev_key:-S-Up}"
+hoppers_agent_next_key="$(tmux show-option -gqv @hoppers-agent-next-key)"
+legacy_project_next_key="$(tmux show-option -gqv @hoppers-project-next-key)"
+hoppers_agent_next_key="${hoppers_agent_next_key:-$legacy_project_next_key}"
+hoppers_agent_next_key="${hoppers_agent_next_key:-S-Down}"
 
 tmux bind-key "$hoppers_prefix_key" run-shell -b "$sidebar_script open-focus >$log_path 2>&1"
 
-if [ -n "$hoppers_project_prev_key" ]; then
-  tmux bind-key -n "$hoppers_project_prev_key" run-shell -b "$jump_project_script prev >$log_path 2>&1"
+if [ -n "$hoppers_agent_prev_key" ]; then
+  tmux bind-key -n "$hoppers_agent_prev_key" run-shell -b "$jump_relative_script prev >$log_path 2>&1"
 fi
-if [ -n "$hoppers_project_next_key" ]; then
-  tmux bind-key -n "$hoppers_project_next_key" run-shell -b "$jump_project_script next >$log_path 2>&1"
+if [ -n "$hoppers_agent_next_key" ]; then
+  tmux bind-key -n "$hoppers_agent_next_key" run-shell -b "$jump_relative_script next >$log_path 2>&1"
 fi
 tmux set-hook -g client-session-changed "run-shell -b \"$sidebar_script sync >$log_path 2>&1\""
 

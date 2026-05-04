@@ -112,7 +112,7 @@ fn jumpRelative(allocator: std.mem.Allocator, direction: []const u8) !void {
     defer discovery.freeCockpitItems(allocator, items);
     if (items.len == 0) return error.RankNotFound;
 
-    var active_index: usize = 0;
+    var active_index: ?usize = null;
     for (items, 0..) |item, index| {
         if (std.mem.eql(u8, item.agent.pane_id, active_pane_id)) {
             active_index = index;
@@ -121,9 +121,9 @@ fn jumpRelative(allocator: std.mem.Allocator, direction: []const u8) !void {
     }
 
     const target_index = if (std.mem.eql(u8, direction, "next"))
-        (active_index + 1) % items.len
+        if (active_index) |index| (index + 1) % items.len else 0
     else if (std.mem.eql(u8, direction, "prev"))
-        if (active_index == 0) items.len - 1 else active_index - 1
+        if (active_index) |index| if (index == 0) items.len - 1 else index - 1 else items.len - 1
     else
         return error.InvalidDirection;
 

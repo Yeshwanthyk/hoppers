@@ -48,8 +48,8 @@ tmux run-shell ~/.tmux/plugins/hoppers/hoppers.tmux
 
 ```text
 prefix Space        open/focus the sidebar
-Shift-Up            jump to previous project
-Shift-Down          jump to next project
+Shift-Up            jump to previous agent
+Shift-Down          jump to next agent
 ```
 
 Inside the sidebar:
@@ -76,9 +76,9 @@ set -g @hoppers-prefix-key 'Space'
 # Sidebar width in columns
 set -g @hoppers-width '38'
 
-# Project navigation. Leave empty to disable.
-set -g @hoppers-project-prev-key 'S-Up'
-set -g @hoppers-project-next-key 'S-Down'
+# Agent navigation. Leave empty to disable.
+set -g @hoppers-agent-prev-key 'S-Up'
+set -g @hoppers-agent-next-key 'S-Down'
 
 # Optional raw/global sidebar toggle keys. Empty by default.
 set -g @hoppers-focus-global-keys ''
@@ -98,11 +98,11 @@ Use `prefix g` instead of `prefix Space`:
 set -g @hoppers-prefix-key 'g'
 ```
 
-Disable Shift-Up/Shift-Down project jumps:
+Disable Shift-Up/Shift-Down agent jumps:
 
 ```tmux
-set -g @hoppers-project-prev-key ''
-set -g @hoppers-project-next-key ''
+set -g @hoppers-agent-prev-key ''
+set -g @hoppers-agent-next-key ''
 ```
 
 Use global rank jumps if they do not conflict with your tmux config:

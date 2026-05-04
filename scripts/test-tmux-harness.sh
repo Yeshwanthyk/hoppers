@@ -153,7 +153,7 @@ plugin_case() {
   active_pane="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{pane_title}|#{pane_start_command}')"
   contains "$active_pane" 'hoppers-sidebar' && ok 'sidebar focus command selects sidebar' || not_ok 'sidebar focus command selects sidebar' "$active_pane" "$(cat "$LOG" 2>/dev/null || true)"
   keys="$(tmux -L "$SOCK" list-keys -T root S-Down 2>/dev/null || true)"
-  contains "$keys" 'jump-project.sh' && ok 'plugin binds project jump keys' || not_ok 'plugin binds project jump keys' "$keys"
+  contains "$keys" 'jump-relative.sh' && ok 'plugin binds agent jump keys' || not_ok 'plugin binds agent jump keys' "$keys"
 }
 
 sidebar_case() {
