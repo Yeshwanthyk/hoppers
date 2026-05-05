@@ -54,32 +54,31 @@ pub const Controller = struct {
         return sanitize.cleanAlloc(self.allocator, output);
     }
 
-    pub fn selectPane(self: Controller, pane_id: []const u8) !void {
-        const window_id = try self.run(&.{ "tmux", "display-message", "-p", "-t", pane_id, "#{window_id}" });
-        defer self.allocator.free(window_id);
-        const trimmed_window_id = std.mem.trim(u8, window_id, " \n\r\t");
-        if (trimmed_window_id.len > 0) {
-            try self.runVoid(&.{ "tmux", "select-window", "-t", trimmed_window_id });
-        }
+    pub fn selectPane(self: Controller, window_id: []const u8, pane_id: []const u8) !void {
+        try self.runVoid(&.{ "tmux", "select-window", "-t", window_id });
         try self.runVoid(&.{ "tmux", "select-pane", "-t", pane_id });
     }
 
     pub fn switchSession(self: Controller, session_name: []const u8) !void {
-        if (self.hasAttachedClient()) {
-            try self.runVoid(&.{ "tmux", "switch-client", "-t", session_name });
+        if (!canSwitchClient()) {
+            try self.runVoid(&.{ "tmux", "has-session", "-t", session_name });
             return;
         }
-        try self.runVoid(&.{ "tmux", "has-session", "-t", session_name });
+        try self.runVoid(&.{ "tmux", "switch-client", "-t", session_name });
     }
 
-    fn hasAttachedClient(self: Controller) bool {
-        const output = self.run(&.{ "tmux", "list-clients", "-F", "#{client_tty}" }) catch return false;
-        defer self.allocator.free(output);
-        var lines = std.mem.splitScalar(u8, output, '\n');
-        while (lines.next()) |line| {
-            if (std.mem.trim(u8, line, " \n\r\t").len > 0) return true;
-        }
-        return false;
+    fn canSwitchClient() bool {
+        const tmux = std.posix.getenv("TMUX") orelse return false;
+        const socket = std.posix.getenv("HOPPERS_TMUX_SOCKET") orelse return true;
+        if (socket.len == 0) return true;
+
+        const tmux_socket = tmuxSocketPath(tmux);
+        return std.mem.eql(u8, tmux_socket, socket) or std.mem.eql(u8, std.fs.path.basename(tmux_socket), socket);
+    }
+
+    fn tmuxSocketPath(tmux: []const u8) []const u8 {
+        const end = std.mem.indexOfScalar(u8, tmux, ',') orelse tmux.len;
+        return tmux[0..end];
     }
 
     pub fn freePanes(self: Controller, panes: []model.TmuxPane) void {

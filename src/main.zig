@@ -82,18 +82,43 @@ fn sidebar(allocator: std.mem.Allocator) !void {
     try app.run(view.widget(), .{});
 }
 
-fn jump(allocator: std.mem.Allocator, rank: usize) !void {
-    const controller = tmux.Controller.init(allocator);
+const Cockpit = struct {
+    allocator: std.mem.Allocator,
+    controller: tmux.Controller,
+    panes: []model.TmuxPane,
+    items: []model.CockpitItem,
+
+    fn deinit(self: *Cockpit) void {
+        discovery.freeCockpitItems(self.allocator, self.items);
+        self.controller.freePanes(self.panes);
+        self.* = undefined;
+    }
+};
+
+fn loadCockpit(allocator: std.mem.Allocator) !Cockpit {
+    return loadCockpitWithController(allocator, tmux.Controller.init(allocator));
+}
+
+fn loadCockpitWithController(allocator: std.mem.Allocator, controller: tmux.Controller) !Cockpit {
     const panes = try controller.listPanes();
-    defer controller.freePanes(panes);
+    errdefer controller.freePanes(panes);
 
     const items = try discovery.buildCockpit(allocator, panes);
-    defer discovery.freeCockpitItems(allocator, items);
+    return .{ .allocator = allocator, .controller = controller, .panes = panes, .items = items };
+}
 
-    for (items) |item| {
+fn switchToItem(controller: tmux.Controller, item: model.CockpitItem) !void {
+    try controller.switchSession(item.agent.session_name);
+    try controller.selectPane(item.agent.window_id, item.agent.pane_id);
+}
+
+fn jump(allocator: std.mem.Allocator, rank: usize) !void {
+    var cockpit = try loadCockpit(allocator);
+    defer cockpit.deinit();
+
+    for (cockpit.items) |item| {
         if (item.rank == rank) {
-            try controller.switchSession(item.agent.session_name);
-            try controller.selectPane(item.agent.pane_id);
+            try switchToItem(cockpit.controller, item);
             return;
         }
     }
@@ -102,14 +127,13 @@ fn jump(allocator: std.mem.Allocator, rank: usize) !void {
 
 fn jumpRelative(allocator: std.mem.Allocator, direction: []const u8) !void {
     const controller = tmux.Controller.init(allocator);
-    const panes = try controller.listPanes();
-    defer controller.freePanes(panes);
-
     const active_pane_id = try controller.activePaneId();
     defer allocator.free(active_pane_id);
 
-    const items = try discovery.buildCockpit(allocator, panes);
-    defer discovery.freeCockpitItems(allocator, items);
+    var cockpit = try loadCockpitWithController(allocator, controller);
+    defer cockpit.deinit();
+
+    const items = cockpit.items;
     if (items.len == 0) return error.RankNotFound;
 
     var active_index: ?usize = null;
@@ -127,21 +151,18 @@ fn jumpRelative(allocator: std.mem.Allocator, direction: []const u8) !void {
     else
         return error.InvalidDirection;
 
-    const item = items[target_index];
-    try controller.switchSession(item.agent.session_name);
-    try controller.selectPane(item.agent.pane_id);
+    try switchToItem(cockpit.controller, items[target_index]);
 }
 
 fn jumpProject(allocator: std.mem.Allocator, direction: []const u8) !void {
     const controller = tmux.Controller.init(allocator);
-    const panes = try controller.listPanes();
-    defer controller.freePanes(panes);
-
     const active_pane_id = try controller.activePaneId();
     defer allocator.free(active_pane_id);
 
-    const items = try discovery.buildCockpit(allocator, panes);
-    defer discovery.freeCockpitItems(allocator, items);
+    var cockpit = try loadCockpitWithController(allocator, controller);
+    defer cockpit.deinit();
+
+    const items = cockpit.items;
     if (items.len == 0) return error.RankNotFound;
 
     var active_project: ?[]const u8 = null;
@@ -153,9 +174,7 @@ fn jumpProject(allocator: std.mem.Allocator, direction: []const u8) !void {
     }
 
     const target_index = findProjectTarget(items, active_project, direction) orelse return error.RankNotFound;
-    const item = items[target_index];
-    try controller.switchSession(item.agent.session_name);
-    try controller.selectPane(item.agent.pane_id);
+    try switchToItem(cockpit.controller, items[target_index]);
 }
 
 fn findProjectTarget(items: []const model.CockpitItem, active_project: ?[]const u8, direction: []const u8) ?usize {

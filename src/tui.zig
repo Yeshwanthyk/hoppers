@@ -194,38 +194,13 @@ pub const CockpitView = struct {
         const item = self.items[index];
         const controller = tmux.Controller.init(self.allocator);
         try controller.switchSession(item.agent.session_name);
-        try controller.selectPane(item.agent.pane_id);
+        try controller.selectPane(item.agent.window_id, item.agent.pane_id);
     }
 
     fn itemIndexAtRow(self: *CockpitView, target_row: u16) ?usize {
-        if (self.items.len == 0 or self.viewport_height == 0) return null;
-
-        const footer_visible = self.viewport_height >= 8;
-        const content_bottom = if (footer_visible) self.viewport_height - 2 else self.viewport_height;
-        var row: u16 = 2;
-        var current_project: []const u8 = "";
-        var current_subgroup: []const u8 = "";
-
-        for (self.items, 0..) |item, index| {
-            if (!self.isVisible(item)) continue;
-            if (!std.mem.eql(u8, current_project, item.project.id)) {
-                if (row + 3 >= content_bottom) return null;
-                if (row > 2) row += 1;
-                current_project = item.project.id;
-                current_subgroup = "";
-                row += 1;
-            }
-            if (!std.mem.eql(u8, current_subgroup, item.project.root)) {
-                if (row + 1 >= content_bottom) return null;
-                current_subgroup = item.project.root;
-                row += 1;
-            }
-            if (row >= content_bottom) return null;
-            if (row == target_row) return index;
-            row += 1;
-        }
-
-        return null;
+        const rows = buildRenderRows(self.allocator, self.items, self.filter, self.viewport_height) catch return null;
+        defer self.allocator.free(rows.rows);
+        return rows.itemIndexAtRow(target_row);
     }
 
     fn selectedIndex(self: *CockpitView) ?usize {
@@ -292,32 +267,30 @@ pub const CockpitView = struct {
             return surface;
         }
 
-        var current_project: []const u8 = "";
-        var current_subgroup: []const u8 = "";
-        var visible_items: usize = 0;
-        for (self.items, 0..) |item, index| {
-            if (!self.isVisible(item)) continue;
-            visible_items += 1;
-            if (!std.mem.eql(u8, current_project, item.project.id)) {
-                if (row + 3 >= content_bottom) break;
-                current_project = item.project.id;
-                current_subgroup = "";
-                const stats = projectStats(self.items[index..], current_project, self.filter);
-                row = writeProject(surface, row, item.project, stats);
+        const rows = try buildRenderRows(ctx.arena, self.items, self.filter, max_size.height);
+        for (rows.rows) |render_row| {
+            switch (render_row) {
+                .rule => {
+                    drawRule(surface, row, theme.surface);
+                    row += 1;
+                },
+                .project => |project_row| {
+                    writeProjectHeader(surface, row, self.items[project_row.item_index].project, project_row.stats);
+                    row += 1;
+                },
+                .subgroup => |item_index| {
+                    writeSubgroup(surface, row, self.items[item_index].project, self.items);
+                    row += 1;
+                },
+                .item => |item_index| {
+                    const item = self.items[item_index];
+                    writeItem(surface, row, item, item.rank == self.selected_rank);
+                    row += 1;
+                },
             }
-            if (!std.mem.eql(u8, current_subgroup, item.project.root)) {
-                if (row + 1 >= content_bottom) break;
-                current_subgroup = item.project.root;
-                writeSubgroup(surface, row, item.project, self.items[index..]);
-                row += 1;
-            }
-            if (row >= content_bottom) break;
-            const selected = item.rank == self.selected_rank;
-            writeItem(surface, row, item, selected);
-            row += 1;
         }
 
-        if (visible_items == 0) {
+        if (rows.visible_items == 0) {
             if (row < content_bottom) writeText(surface, 1, row, "no agents match filter", subtleStyle());
             drawFooter(surface, max_size, footer_visible);
             return surface;
@@ -327,6 +300,104 @@ pub const CockpitView = struct {
         return surface;
     }
 };
+
+const ProjectRow = struct {
+    item_index: usize,
+    stats: StatusCounts,
+};
+
+const RenderRow = union(enum) {
+    rule,
+    project: ProjectRow,
+    subgroup: usize,
+    item: usize,
+};
+
+const RenderRows = struct {
+    rows: []RenderRow,
+    visible_items: usize,
+
+    fn itemIndexAtRow(self: RenderRows, target_row: u16) ?usize {
+        if (target_row < 2) return null;
+        const index = target_row - 2;
+        if (index >= self.rows.len) return null;
+        return switch (self.rows[index]) {
+            .item => |item_index| item_index,
+            .rule, .project, .subgroup => null,
+        };
+    }
+};
+
+fn buildRenderRows(
+    allocator: std.mem.Allocator,
+    items: []const model.CockpitItem,
+    filter: FilterMode,
+    viewport_height: u16,
+) std.mem.Allocator.Error!RenderRows {
+    if (items.len == 0 or viewport_height == 0) return .{ .rows = &.{}, .visible_items = 0 };
+
+    const footer_visible = viewport_height >= 8;
+    const content_bottom = if (footer_visible) viewport_height - 2 else viewport_height;
+    if (content_bottom <= 2) return .{ .rows = &.{}, .visible_items = 0 };
+
+    var rows: std.ArrayList(RenderRow) = .empty;
+    errdefer rows.deinit(allocator);
+
+    var row: u16 = 2;
+    var visible_items: usize = 0;
+    for (items, 0..) |item, index| {
+        if (!statusVisible(filter, item.agent.status)) continue;
+        visible_items += 1;
+        if (projectSeen(items[0..index], item.project.id, filter)) continue;
+        if (row + 3 >= content_bottom) break;
+        if (row > 2) {
+            try rows.append(allocator, .rule);
+            row += 1;
+        }
+        try rows.append(allocator, .{ .project = .{
+            .item_index = index,
+            .stats = projectStats(items, item.project.id, filter),
+        } });
+        row += 1;
+
+        for (items, 0..) |group_item, group_index| {
+            if (!statusVisible(filter, group_item.agent.status)) continue;
+            if (!std.mem.eql(u8, group_item.project.id, item.project.id)) continue;
+            if (rootSeen(items[0..group_index], item.project.id, group_item.project.root, filter)) continue;
+            if (row + 1 >= content_bottom) break;
+            try rows.append(allocator, .{ .subgroup = group_index });
+            row += 1;
+
+            for (items, 0..) |root_item, root_index| {
+                if (!statusVisible(filter, root_item.agent.status)) continue;
+                if (!std.mem.eql(u8, root_item.project.id, item.project.id)) continue;
+                if (!std.mem.eql(u8, root_item.project.root, group_item.project.root)) continue;
+                if (row >= content_bottom) break;
+                try rows.append(allocator, .{ .item = root_index });
+                row += 1;
+            }
+        }
+    }
+
+    return .{ .rows = try rows.toOwnedSlice(allocator), .visible_items = visible_items };
+}
+
+fn projectSeen(items: []const model.CockpitItem, project_id: []const u8, filter: FilterMode) bool {
+    for (items) |item| {
+        if (!statusVisible(filter, item.agent.status)) continue;
+        if (std.mem.eql(u8, item.project.id, project_id)) return true;
+    }
+    return false;
+}
+
+fn rootSeen(items: []const model.CockpitItem, project_id: []const u8, root: []const u8, filter: FilterMode) bool {
+    for (items) |item| {
+        if (!statusVisible(filter, item.agent.status)) continue;
+        if (!std.mem.eql(u8, item.project.id, project_id)) continue;
+        if (std.mem.eql(u8, item.project.root, root)) return true;
+    }
+    return false;
+}
 
 fn drawHeader(surface: vxfw.Surface, items: []const model.CockpitItem, filter: FilterMode) u16 {
     const stats = listStats(items);
@@ -343,18 +414,11 @@ fn drawHeader(surface: vxfw.Surface, items: []const model.CockpitItem, filter: F
     return 2;
 }
 
-fn writeProject(surface: vxfw.Surface, row: u16, project: model.Project, stats: StatusCounts) u16 {
-    var next = row;
-    if (next > 2) {
-        drawRule(surface, next, theme.surface);
-        next += 1;
-    }
-    writeText(surface, 1, next, project.name, .{ .fg = theme.text, .bold = true });
+fn writeProjectHeader(surface: vxfw.Surface, row: u16, project: model.Project, stats: StatusCounts) void {
+    writeText(surface, 1, row, project.name, .{ .fg = theme.text, .bold = true });
     var buf: [48]u8 = undefined;
     const heat = heatLabel(&buf, stats);
-    if (heat.len > 0) writeRight(surface, next, heat, 1, subtleStyle());
-
-    return next + 1;
+    if (heat.len > 0) writeRight(surface, row, heat, 1, subtleStyle());
 }
 
 fn writeSubgroup(surface: vxfw.Surface, row: u16, project: model.Project, items: []const model.CockpitItem) void {
@@ -367,7 +431,7 @@ fn writeSubgroup(surface: vxfw.Surface, row: u16, project: model.Project, items:
     var rendered: [32]u16 = undefined;
     var rendered_len: usize = 0;
     for (items) |item| {
-        if (!std.mem.eql(u8, item.project.id, project.id)) break;
+        if (!std.mem.eql(u8, item.project.id, project.id)) continue;
         if (!std.mem.eql(u8, item.project.root, project.root)) continue;
         for (item.project.ports) |port| {
             if (containsPort(rendered[0..rendered_len], port)) continue;
@@ -531,7 +595,7 @@ fn listStats(items: []const model.CockpitItem) StatusCounts {
 fn projectStats(items: []const model.CockpitItem, project_id: []const u8, filter: FilterMode) StatusCounts {
     var stats: StatusCounts = .{};
     for (items) |item| {
-        if (!std.mem.eql(u8, item.project.id, project_id)) break;
+        if (!std.mem.eql(u8, item.project.id, project_id)) continue;
         if (!statusVisible(filter, item.agent.status)) continue;
         addStatus(&stats, item.agent.status);
     }
