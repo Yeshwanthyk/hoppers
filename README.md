@@ -55,9 +55,9 @@ Shift-Down          jump to next agent
 Inside the sidebar:
 
 ```text
-j / k               move selection
+j / k or wheel      move selection
 1..9                select ranked agent
-Enter               jump to selected agent
+Click or Enter      jump to selected agent
 r                   refresh
 f                   cycle filter: all, hot, active
 q                   close sidebar

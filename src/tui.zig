@@ -70,6 +70,7 @@ pub const CockpitView = struct {
     refresh_ms: u32 = 3000,
     selected_rank: usize = 1,
     filter: FilterMode = .all,
+    viewport_height: u16 = 0,
 
     pub fn deinit(self: *CockpitView) void {
         discovery.freeCockpitItems(self.allocator, self.items);
@@ -129,6 +130,25 @@ pub const CockpitView = struct {
                     return;
                 }
             },
+            .mouse => |mouse| {
+                if (mouse.type != .press) return;
+                if (mouse.button == .wheel_down) {
+                    self.moveSelection(.next);
+                    ctx.consumeAndRedraw();
+                    return;
+                }
+                if (mouse.button == .wheel_up) {
+                    self.moveSelection(.prev);
+                    ctx.consumeAndRedraw();
+                    return;
+                }
+                if (mouse.button != .left) return;
+                const index = self.itemIndexAtRow(mouse.row) orelse return;
+                self.selected_rank = self.items[index].rank;
+                ctx.consumeAndRedraw();
+                try self.jumpSelected();
+                return;
+            },
             else => {},
         }
     }
@@ -175,6 +195,37 @@ pub const CockpitView = struct {
         const controller = tmux.Controller.init(self.allocator);
         try controller.switchSession(item.agent.session_name);
         try controller.selectPane(item.agent.pane_id);
+    }
+
+    fn itemIndexAtRow(self: *CockpitView, target_row: u16) ?usize {
+        if (self.items.len == 0 or self.viewport_height == 0) return null;
+
+        const footer_visible = self.viewport_height >= 8;
+        const content_bottom = if (footer_visible) self.viewport_height - 2 else self.viewport_height;
+        var row: u16 = 2;
+        var current_project: []const u8 = "";
+        var current_subgroup: []const u8 = "";
+
+        for (self.items, 0..) |item, index| {
+            if (!self.isVisible(item)) continue;
+            if (!std.mem.eql(u8, current_project, item.project.id)) {
+                if (row + 3 >= content_bottom) return null;
+                if (row > 2) row += 1;
+                current_project = item.project.id;
+                current_subgroup = "";
+                row += 1;
+            }
+            if (!std.mem.eql(u8, current_subgroup, item.project.root)) {
+                if (row + 1 >= content_bottom) return null;
+                current_subgroup = item.project.root;
+                row += 1;
+            }
+            if (row >= content_bottom) return null;
+            if (row == target_row) return index;
+            row += 1;
+        }
+
+        return null;
     }
 
     fn selectedIndex(self: *CockpitView) ?usize {
@@ -225,6 +276,7 @@ pub const CockpitView = struct {
     fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const self: *CockpitView = @ptrCast(@alignCast(ptr));
         const max_size = ctx.max.size();
+        self.viewport_height = max_size.height;
         const surface = try vxfw.Surface.init(ctx.arena, self.widget(), max_size);
 
         if (max_size.height == 0 or max_size.width == 0) return surface;
@@ -410,7 +462,7 @@ fn drawFooter(surface: vxfw.Surface, size: vxfw.Size, visible: bool) void {
     if (!visible) return;
     const row = size.height - 1;
     drawRule(surface, row - 1, theme.surface2);
-    writeText(surface, 1, row, "j/k select · enter jump · f filter · r refresh · q", subtleStyle());
+    writeText(surface, 1, row, "click/enter jump · j/k/wheel select · f filter · r refresh · q", subtleStyle());
 }
 
 fn drawRule(surface: vxfw.Surface, row: u16, color: vaxis.Color) void {
