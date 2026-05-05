@@ -6,15 +6,19 @@ const tmux = @import("tmux.zig");
 
 pub fn buildCockpit(allocator: std.mem.Allocator, panes: []const model.TmuxPane) ![]model.CockpitItem {
     var items: std.ArrayList(model.CockpitItem) = .empty;
-    var detector: PaneAgentDetector = .{ .allocator = allocator };
-    defer detector.deinit();
+    var context: DiscoveryContext = .{
+        .allocator = allocator,
+        .project_cache = projects.ProjectCache.init(allocator),
+        .detector = .{ .allocator = allocator },
+    };
+    defer context.deinit();
     errdefer {
         for (items.items) |item| freeCockpitItem(allocator, item);
         items.deinit(allocator);
     }
 
     for (panes) |pane| {
-        const item = (try buildCockpitItem(allocator, &detector, pane)) orelse continue;
+        const item = (try buildCockpitItem(allocator, &context, pane)) orelse continue;
         items.append(allocator, item) catch |err| {
             freeCockpitItem(allocator, item);
             return err;
@@ -33,15 +37,15 @@ pub fn freeCockpitItems(allocator: std.mem.Allocator, items: []model.CockpitItem
 
 fn buildCockpitItem(
     allocator: std.mem.Allocator,
-    detector: *PaneAgentDetector,
+    context: *DiscoveryContext,
     pane: model.TmuxPane,
 ) !?model.CockpitItem {
-    const kind = detector.detectPaneAgentKind(pane);
+    const kind = context.detector.detectPaneAgentKind(pane);
     if (kind == .unknown) return null;
 
-    var project = try projects.inferProject(allocator, pane.current_path);
+    var project = try context.project_cache.infer(pane.current_path);
     errdefer projects.freeProject(allocator, project);
-    const ports = try detector.detectPorts(pane.pane_pid);
+    const ports = try context.detector.detectPorts(pane.pane_pid);
     allocator.free(project.ports);
     project.ports = ports;
 
@@ -131,14 +135,30 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
+const DiscoveryContext = struct {
+    allocator: std.mem.Allocator,
+    project_cache: projects.ProjectCache,
+    detector: PaneAgentDetector,
+
+    fn deinit(self: *DiscoveryContext) void {
+        self.detector.deinit();
+        self.project_cache.deinit();
+        self.* = undefined;
+    }
+};
+
 const PaneAgentDetector = struct {
     allocator: std.mem.Allocator,
     processes: ?[]ProcessInfo = null,
+    parent_pids: ?std.AutoHashMap(u32, u32) = null,
     ps_output: ?[]u8 = null,
+    listening_ports: ?[]PidPort = null,
 
     fn deinit(self: *PaneAgentDetector) void {
         if (self.processes) |processes| self.allocator.free(processes);
+        if (self.parent_pids) |*parent_pids| parent_pids.deinit();
         if (self.ps_output) |ps_output| self.allocator.free(ps_output);
+        if (self.listening_ports) |listening_ports| self.allocator.free(listening_ports);
         self.* = undefined;
     }
 
@@ -150,8 +170,9 @@ const PaneAgentDetector = struct {
 
     fn detectDescendantAgentKind(self: *PaneAgentDetector, root_pid: u32) !model.AgentKind {
         const processes = try self.loadProcesses();
+        try self.loadParentPids();
         for (processes) |process| {
-            if (!isDescendantProcess(processes, process, root_pid)) continue;
+            if (!self.isDescendantProcess(process, root_pid)) continue;
             const kind = model.detectAgentKind(process.command, "", "");
             if (kind != .unknown) return kind;
         }
@@ -159,22 +180,19 @@ const PaneAgentDetector = struct {
     }
 
     fn detectPorts(self: *PaneAgentDetector, root_pid: u32) ![]const u16 {
-        const processes = try self.loadProcesses();
-        var pids: std.ArrayList(u32) = .empty;
-        defer pids.deinit(self.allocator);
-        try pids.append(self.allocator, root_pid);
-        for (processes) |process| {
-            if (isDescendantProcess(processes, process, root_pid)) try pids.append(self.allocator, process.pid);
+        _ = try self.loadProcesses();
+        try self.loadParentPids();
+        const listening_ports = self.loadListeningPorts() catch return self.allocator.alloc(u16, 0);
+        var ports: std.ArrayList(u16) = .empty;
+        errdefer ports.deinit(self.allocator);
+        for (listening_ports) |pid_port| {
+            const matches_root = pid_port.pid == root_pid;
+            const matches_child = !matches_root and self.isDescendantPid(pid_port.pid, root_pid);
+            if (!matches_root and !matches_child) continue;
+            if (!containsPort(ports.items, pid_port.port)) try ports.append(self.allocator, pid_port.port);
         }
-        if (pids.items.len == 0) return self.allocator.alloc(u16, 0);
-
-        var pid_buf: [4096]u8 = undefined;
-        var stream = std.io.fixedBufferStream(&pid_buf);
-        for (pids.items, 0..) |pid, index| {
-            if (index > 0) stream.writer().writeAll(",") catch break;
-            stream.writer().print("{d}", .{pid}) catch break;
-        }
-        return listListeningPorts(self.allocator, stream.getWritten()) catch self.allocator.alloc(u16, 0);
+        std.mem.sort(u16, ports.items, {}, std.sort.asc(u16));
+        return ports.toOwnedSlice(self.allocator);
     }
 
     fn loadProcesses(self: *PaneAgentDetector) ![]const ProcessInfo {
@@ -205,6 +223,39 @@ const PaneAgentDetector = struct {
         self.ps_output = result.stdout;
         return self.processes.?;
     }
+
+    fn loadParentPids(self: *PaneAgentDetector) !void {
+        if (self.parent_pids != null) return;
+
+        const processes = try self.loadProcesses();
+        var parent_pids = std.AutoHashMap(u32, u32).init(self.allocator);
+        errdefer parent_pids.deinit();
+        try parent_pids.ensureTotalCapacity(@intCast(processes.len));
+        for (processes) |process| parent_pids.putAssumeCapacity(process.pid, process.ppid);
+
+        self.parent_pids = parent_pids;
+    }
+
+    fn isDescendantProcess(self: *PaneAgentDetector, process: ProcessInfo, root_pid: u32) bool {
+        return self.isDescendantPid(process.pid, root_pid);
+    }
+
+    fn isDescendantPid(self: *PaneAgentDetector, pid: u32, root_pid: u32) bool {
+        const parent_pids = self.parent_pids orelse return false;
+        var ppid = parent_pids.get(pid) orelse return false;
+        var depth: usize = 0;
+        while (ppid != 0 and depth < parent_pids.count()) : (depth += 1) {
+            if (ppid == root_pid) return true;
+            ppid = parent_pids.get(ppid) orelse return false;
+        }
+        return false;
+    }
+
+    fn loadListeningPorts(self: *PaneAgentDetector) ![]const PidPort {
+        if (self.listening_ports) |listening_ports| return listening_ports;
+        self.listening_ports = try listListeningPorts(self.allocator);
+        return self.listening_ports.?;
+    }
 };
 
 const ProcessInfo = struct {
@@ -225,42 +276,40 @@ fn parseProcessLine(line: []const u8) ?ProcessInfo {
     };
 }
 
-fn isDescendantProcess(processes: []const ProcessInfo, process: ProcessInfo, root_pid: u32) bool {
-    var ppid = process.ppid;
-    var depth: usize = 0;
-    while (ppid != 0 and depth < processes.len) : (depth += 1) {
-        if (ppid == root_pid) return true;
-        ppid = parentPid(processes, ppid) orelse return false;
-    }
-    return false;
-}
+const PidPort = struct {
+    pid: u32,
+    port: u16,
+};
 
-fn parentPid(processes: []const ProcessInfo, pid: u32) ?u32 {
-    for (processes) |process| {
-        if (process.pid == pid) return process.ppid;
-    }
-    return null;
-}
-
-fn listListeningPorts(allocator: std.mem.Allocator, pids: []const u8) ![]const u16 {
+fn listListeningPorts(allocator: std.mem.Allocator) ![]PidPort {
     const result = try std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &.{ "lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fn", "-p", pids },
-        .max_output_bytes = 256 * 1024,
+        .argv = &.{ "lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn" },
+        .max_output_bytes = 1024 * 1024,
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) return allocator.alloc(u16, 0);
+    if (result.term != .Exited or result.term.Exited != 0) return allocator.alloc(PidPort, 0);
 
-    var ports: std.ArrayList(u16) = .empty;
+    var ports: std.ArrayList(PidPort) = .empty;
     errdefer ports.deinit(allocator);
+    var current_pid: ?u32 = null;
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
+        if (parseLsofPid(line)) |pid| {
+            current_pid = pid;
+            continue;
+        }
+        const pid = current_pid orelse continue;
         const port = parseLsofPort(line) orelse continue;
-        if (!containsPort(ports.items, port)) try ports.append(allocator, port);
+        if (!containsPidPort(ports.items, pid, port)) try ports.append(allocator, .{ .pid = pid, .port = port });
     }
-    std.mem.sort(u16, ports.items, {}, std.sort.asc(u16));
     return ports.toOwnedSlice(allocator);
+}
+
+fn parseLsofPid(line: []const u8) ?u32 {
+    if (line.len < 2 or line[0] != 'p') return null;
+    return std.fmt.parseInt(u32, line[1..], 10) catch null;
 }
 
 fn parseLsofPort(line: []const u8) ?u16 {
@@ -275,6 +324,13 @@ fn parseLsofPort(line: []const u8) ?u16 {
 fn containsPort(ports: []const u16, port: u16) bool {
     for (ports) |existing| {
         if (existing == port) return true;
+    }
+    return false;
+}
+
+fn containsPidPort(ports: []const PidPort, pid: u32, port: u16) bool {
+    for (ports) |existing| {
+        if (existing.pid == pid and existing.port == port) return true;
     }
     return false;
 }
