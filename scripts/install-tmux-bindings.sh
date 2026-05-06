@@ -30,7 +30,7 @@ legacy_project_next_key="$(tmux show-option -gqv @hoppers-project-next-key)"
 hoppers_agent_next_key="${hoppers_agent_next_key:-$legacy_project_next_key}"
 hoppers_agent_next_key="${hoppers_agent_next_key:-S-Down}"
 
-tmux bind-key "$hoppers_prefix_key" run-shell -b "$sidebar_script open-focus >$log_path 2>&1"
+tmux bind-key "$hoppers_prefix_key" run-shell -b "$sidebar_script toggle >$log_path 2>&1"
 
 if [ -n "$hoppers_agent_prev_key" ]; then
   tmux bind-key -n "$hoppers_agent_prev_key" run-shell -b "$jump_relative_script prev >$log_path 2>&1"

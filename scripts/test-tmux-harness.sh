@@ -147,7 +147,7 @@ plugin_case() {
   local keys
   sleep 1
   keys="$(tmux -L "$SOCK" list-keys -T prefix Space 2>/dev/null || true)"
-  contains "$keys" 'sidebar.sh' && contains "$keys" 'open-focus' && ok 'plugin binds sidebar focus' || not_ok 'plugin binds sidebar focus' "$keys" "$(cat "$LOG" 2>/dev/null || true)"
+  contains "$keys" 'sidebar.sh' && contains "$keys" 'toggle' && ok 'plugin binds sidebar toggle' || not_ok 'plugin binds sidebar toggle' "$keys" "$(cat "$LOG" 2>/dev/null || true)"
   HOPPERS_TARGET_WINDOW="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{window_id}')" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" open-focus >"$LOG" 2>&1
   local active_pane
   active_pane="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{pane_title}|#{pane_start_command}')"

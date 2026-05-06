@@ -137,14 +137,12 @@ case "$command" in
       ensure_sidebar "$current_window" >/dev/null
       pane_exists "$active_pane" && tmux select-pane -t "$active_pane" 2>/dev/null || true
     else
-      pane="$(find_sidebar_global || true)"
-      [ -n "$pane" ] && cleanup_extra_sidebars "$pane"
+      close_sidebar
     fi
     ;;
   toggle)
     sidebar_pane="$(find_sidebar_global || true)"
-    active_pane="$(tmux display-message -p -t "$current_window" '#{pane_id}')"
-    if [ -n "$sidebar_pane" ] && [ "$active_pane" = "$sidebar_pane" ]; then
+    if [ "$(tmux show-option -gqv "$STATE_OPTION")" = "on" ] || [ -n "$sidebar_pane" ]; then
       close_sidebar
       exit 0
     fi
