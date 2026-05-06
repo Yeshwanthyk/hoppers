@@ -96,6 +96,11 @@ const State = struct {
     allocator: std.mem.Allocator,
     snapshot: []u8 = &.{},
     items_json: []u8 = &.{},
+    last_refresh_ms: i64 = 0,
+    render_snapshot: *const fn (std.mem.Allocator) anyerror![]u8 = renderSnapshotAlloc,
+    render_items_json: *const fn (std.mem.Allocator) anyerror![]u8 = renderItemsJsonAlloc,
+
+    const refresh_ttl_ms: i64 = 1000;
 
     fn deinit(self: *State) void {
         self.allocator.free(self.snapshot);
@@ -104,13 +109,20 @@ const State = struct {
     }
 
     fn refresh(self: *State) !void {
-        const next_snapshot = try renderSnapshotAlloc(self.allocator);
+        const next_snapshot = try self.render_snapshot(self.allocator);
         errdefer self.allocator.free(next_snapshot);
-        const next_items_json = try renderItemsJsonAlloc(self.allocator);
+        const next_items_json = try self.render_items_json(self.allocator);
         self.allocator.free(self.snapshot);
         self.allocator.free(self.items_json);
         self.snapshot = next_snapshot;
         self.items_json = next_items_json;
+        self.last_refresh_ms = std.time.milliTimestamp();
+    }
+
+    fn refreshIfStale(self: *State) !void {
+        const now = std.time.milliTimestamp();
+        if (self.snapshot.len != 0 and now - self.last_refresh_ms < refresh_ttl_ms) return;
+        try self.refresh();
     }
 };
 
@@ -134,12 +146,12 @@ fn handleConnection(state: *State, stream: std.net.Stream) !bool {
         return false;
     }
     if (std.mem.eql(u8, command, "snapshot")) {
-        if (state.snapshot.len == 0) try state.refresh();
+        try state.refreshIfStale();
         try writeFrame(stream, state.snapshot);
         return false;
     }
     if (std.mem.eql(u8, command, "items")) {
-        if (state.items_json.len == 0) try state.refresh();
+        try state.refreshIfStale();
         try writeFrame(stream, state.items_json);
         return false;
     }
@@ -372,4 +384,67 @@ fn readFrameAlloc(allocator: std.mem.Allocator, stream: std.net.Stream) ![]u8 {
 test "socket path honors override" {
     // Environment mutation is intentionally avoided; this smoke test keeps the module in the test graph.
     try std.testing.expect(default_socket_name.len > 0);
+}
+
+test "state refreshIfStale re-renders after ttl so new agents appear" {
+    const Fake = struct {
+        var snapshots: usize = 0;
+        var items: usize = 0;
+
+        fn snapshot(allocator: std.mem.Allocator) ![]u8 {
+            snapshots += 1;
+            return std.fmt.allocPrint(allocator, "snapshot-{d}", .{snapshots});
+        }
+
+        fn itemsJson(allocator: std.mem.Allocator) ![]u8 {
+            items += 1;
+            return std.fmt.allocPrint(allocator, "[{d}]", .{items});
+        }
+    };
+
+    Fake.snapshots = 0;
+    Fake.items = 0;
+    var state: State = .{
+        .allocator = std.testing.allocator,
+        .render_snapshot = Fake.snapshot,
+        .render_items_json = Fake.itemsJson,
+    };
+    defer state.deinit();
+
+    try state.refreshIfStale();
+    try std.testing.expectEqualStrings("[1]", state.items_json);
+    try std.testing.expectEqual(@as(usize, 1), Fake.items);
+
+    state.last_refresh_ms -= State.refresh_ttl_ms + 1;
+    try state.refreshIfStale();
+    try std.testing.expectEqualStrings("[2]", state.items_json);
+    try std.testing.expectEqual(@as(usize, 2), Fake.items);
+}
+
+test "state refreshIfStale coalesces back-to-back sidebar polls" {
+    const Fake = struct {
+        var calls: usize = 0;
+
+        fn snapshot(allocator: std.mem.Allocator) ![]u8 {
+            return allocator.dupe(u8, "snapshot");
+        }
+
+        fn itemsJson(allocator: std.mem.Allocator) ![]u8 {
+            calls += 1;
+            return std.fmt.allocPrint(allocator, "[{d}]", .{calls});
+        }
+    };
+
+    Fake.calls = 0;
+    var state: State = .{
+        .allocator = std.testing.allocator,
+        .render_snapshot = Fake.snapshot,
+        .render_items_json = Fake.itemsJson,
+    };
+    defer state.deinit();
+
+    try state.refreshIfStale();
+    try state.refreshIfStale();
+    try std.testing.expectEqualStrings("[1]", state.items_json);
+    try std.testing.expectEqual(@as(usize, 1), Fake.calls);
 }

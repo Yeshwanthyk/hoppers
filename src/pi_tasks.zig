@@ -43,6 +43,10 @@ pub fn summarizeForProject(allocator: std.mem.Allocator, project_root: []const u
     }
 
     if (result.title.len == 0) {
+        if (result.status == .done) {
+            result.title = try allocator.dupe(u8, "all tasks completed");
+            return result;
+        }
         result.deinit(allocator);
         return null;
     }
@@ -73,9 +77,21 @@ fn summarizeContent(
             result.status = .running;
             return;
         }
+        if (std.mem.eql(u8, status, "failed")) {
+            if (result.status != .running) {
+                const text = taskText(task, "subject") orelse "failed task";
+                try replaceTitle(allocator, result, text);
+                result.status = .failed;
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, status, "completed")) {
+            if (result.status == .idle) result.status = .done;
+            continue;
+        }
         if (std.mem.eql(u8, status, "pending")) {
             pending_count.* += 1;
-            result.status = .waiting;
+            if (result.status == .idle or result.status == .done) result.status = .waiting;
         }
     }
 }
@@ -122,4 +138,51 @@ test "summarizes pending count" {
     try summarizeContent(std.testing.allocator, content, &summary, &pending);
     try std.testing.expectEqual(model.AgentStatus.waiting, summary.status);
     try std.testing.expectEqual(@as(usize, 2), pending);
+}
+
+test "summarizes failed task" {
+    const content =
+        \\{"tasks":[{"subject":"Broken","status":"failed"},{"subject":"Queued","status":"pending"}]}
+    ;
+    var summary: Summary = .{ .status = .idle, .title = try std.testing.allocator.dupe(u8, "") };
+    defer summary.deinit(std.testing.allocator);
+    var pending: usize = 0;
+    try summarizeContent(std.testing.allocator, content, &summary, &pending);
+    try std.testing.expectEqual(model.AgentStatus.failed, summary.status);
+    try std.testing.expectEqualStrings("Broken", summary.title);
+}
+
+test "summarizes completed tasks as done" {
+    const content =
+        \\{"tasks":[{"subject":"Done","status":"completed"}]}
+    ;
+    var summary: Summary = .{ .status = .idle, .title = try std.testing.allocator.dupe(u8, "") };
+    defer summary.deinit(std.testing.allocator);
+    var pending: usize = 0;
+    try summarizeContent(std.testing.allocator, content, &summary, &pending);
+    if (summary.title.len == 0 and summary.status == .done) try replaceTitle(
+        std.testing.allocator,
+        &summary,
+        "all tasks completed",
+    );
+    try std.testing.expectEqual(model.AgentStatus.done, summary.status);
+    try std.testing.expectEqualStrings("all tasks completed", summary.title);
+}
+
+test "pi task state precedence is running failed waiting done" {
+    const content =
+        \\{"tasks":[
+        \\  {"subject":"Done","status":"completed"},
+        \\  {"subject":"Queued","status":"pending"},
+        \\  {"subject":"Broken","status":"failed"},
+        \\  {"subject":"Run","status":"in_progress","activeForm":"Running"}
+        \\]}
+    ;
+    var summary: Summary = .{ .status = .idle, .title = try std.testing.allocator.dupe(u8, "") };
+    defer summary.deinit(std.testing.allocator);
+    var pending: usize = 0;
+    try summarizeContent(std.testing.allocator, content, &summary, &pending);
+    try std.testing.expectEqual(model.AgentStatus.running, summary.status);
+    try std.testing.expectEqualStrings("Running", summary.title);
+    try std.testing.expectEqual(@as(usize, 1), pending);
 }

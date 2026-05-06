@@ -233,9 +233,6 @@ pub const CockpitView = struct {
 
     fn refresh(self: *CockpitView) !void {
         const controller = tmux.Controller.init(self.allocator);
-        const panes = try controller.listPanes();
-        defer controller.freePanes(panes);
-
         const active_pane_id = controller.activePaneId() catch |err| switch (err) {
             error.CommandFailed => null,
             else => return err,
@@ -244,8 +241,11 @@ pub const CockpitView = struct {
 
         const path = try daemon.socketPath(self.allocator);
         defer self.allocator.free(path);
-        const next_items = daemon.loadItemsAlloc(self.allocator, path) catch
-            try discovery.buildCockpit(self.allocator, panes);
+        const next_items = daemon.loadItemsAlloc(self.allocator, path) catch fallback: {
+            const panes = try controller.listPanes();
+            defer controller.freePanes(panes);
+            break :fallback try discovery.buildCockpit(self.allocator, panes);
+        };
         discovery.freeCockpitItems(self.allocator, self.items);
         self.items = next_items;
         if (active_pane_id) |pane_id| self.selectPaneRank(pane_id);
