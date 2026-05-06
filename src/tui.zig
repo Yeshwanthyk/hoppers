@@ -1,5 +1,6 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
+const daemon = @import("daemon.zig");
 const discovery = @import("discovery.zig");
 const model = @import("model.zig");
 const tmux = @import("tmux.zig");
@@ -241,7 +242,10 @@ pub const CockpitView = struct {
         };
         defer if (active_pane_id) |pane_id| self.allocator.free(pane_id);
 
-        const next_items = try discovery.buildCockpit(self.allocator, panes);
+        const path = try daemon.socketPath(self.allocator);
+        defer self.allocator.free(path);
+        const next_items = daemon.loadItemsAlloc(self.allocator, path) catch
+            try discovery.buildCockpit(self.allocator, panes);
         discovery.freeCockpitItems(self.allocator, self.items);
         self.items = next_items;
         if (active_pane_id) |pane_id| self.selectPaneRank(pane_id);

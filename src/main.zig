@@ -1,5 +1,6 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
+const daemon = @import("daemon.zig");
 const discovery = @import("discovery.zig");
 const model = @import("model.zig");
 const tmux = @import("tmux.zig");
@@ -17,6 +18,16 @@ pub fn main() !void {
     defer args.deinit();
     _ = args.next();
     const command = args.next() orelse "snapshot";
+
+    if (std.mem.eql(u8, command, "daemon")) {
+        try daemonCommand(allocator, &args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "notify")) {
+        try notify(allocator, &args);
+        return;
+    }
 
     if (std.mem.eql(u8, command, "snapshot")) {
         try snapshot(allocator);
@@ -54,7 +65,70 @@ pub fn main() !void {
     return error.UnknownCommand;
 }
 
+fn daemonCommand(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
+    const subcommand = args.next() orelse return error.MissingDaemonCommand;
+    var path = try daemon.socketPath(allocator);
+    defer allocator.free(path);
+    if (std.mem.eql(u8, subcommand, "--foreground")) {
+        if (args.next()) |flag| {
+            if (!std.mem.eql(u8, flag, "--socket")) return error.InvalidDaemonArgument;
+            allocator.free(path);
+            path = try allocator.dupe(u8, args.next() orelse return error.MissingSocketPath);
+        }
+        try daemon.foreground(allocator, path);
+        return;
+    }
+    if (std.mem.eql(u8, subcommand, "path")) {
+        try std.fs.File.stdout().writeAll(path);
+        try std.fs.File.stdout().writeAll("\n");
+        return;
+    }
+    if (std.mem.eql(u8, subcommand, "start")) {
+        const self_exe = try std.fs.selfExePathAlloc(allocator);
+        defer allocator.free(self_exe);
+        var child = std.process.Child.init(&.{ self_exe, "daemon", "--foreground", "--socket", path }, allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        try child.spawn();
+        child = undefined;
+        return;
+    }
+    if (std.mem.eql(u8, subcommand, "stop")) {
+        const response = daemon.requestAlloc(allocator, path, "stop") catch return;
+        allocator.free(response);
+        return;
+    }
+    if (std.mem.eql(u8, subcommand, "ping") or std.mem.eql(u8, subcommand, "snapshot")) {
+        const response = try daemon.requestAlloc(allocator, path, subcommand);
+        defer allocator.free(response);
+        if (std.mem.eql(u8, subcommand, "ping") and std.mem.indexOf(u8, response, "pong") != null) {
+            try std.fs.File.stdout().writeAll("pong\n");
+        } else {
+            try std.fs.File.stdout().writeAll(response);
+        }
+        return;
+    }
+    return error.UnknownDaemonCommand;
+}
+
+fn notify(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
+    _ = args.next() orelse "refresh";
+    const path = try daemon.socketPath(allocator);
+    defer allocator.free(path);
+    const response = daemon.requestAlloc(allocator, path, "refresh") catch return;
+    allocator.free(response);
+}
+
 fn snapshot(allocator: std.mem.Allocator) !void {
+    const path = try daemon.socketPath(allocator);
+    defer allocator.free(path);
+    if (daemon.requestAlloc(allocator, path, "snapshot")) |response| {
+        defer allocator.free(response);
+        try std.fs.File.stdout().writeAll(response);
+        return;
+    } else |_| {}
+
     const controller = tmux.Controller.init(allocator);
     const panes = try controller.listPanes();
     defer controller.freePanes(panes);
@@ -69,11 +143,7 @@ fn snapshot(allocator: std.mem.Allocator) !void {
 }
 
 fn sidebar(allocator: std.mem.Allocator) !void {
-    const controller = tmux.Controller.init(allocator);
-    const panes = try controller.listPanes();
-    defer controller.freePanes(panes);
-
-    const items = try discovery.buildCockpit(allocator, panes);
+    const items = try loadItems(allocator);
     var app = try vxfw.App.init(allocator);
     defer app.deinit();
 
@@ -99,7 +169,24 @@ fn loadCockpit(allocator: std.mem.Allocator) !Cockpit {
     return loadCockpitWithController(allocator, tmux.Controller.init(allocator));
 }
 
+fn loadItems(allocator: std.mem.Allocator) ![]model.CockpitItem {
+    const path = try daemon.socketPath(allocator);
+    defer allocator.free(path);
+    if (daemon.loadItemsAlloc(allocator, path)) |items| return items else |_| {}
+    const controller = tmux.Controller.init(allocator);
+    const panes = try controller.listPanes();
+    defer controller.freePanes(panes);
+    return discovery.buildCockpit(allocator, panes);
+}
+
 fn loadCockpitWithController(allocator: std.mem.Allocator, controller: tmux.Controller) !Cockpit {
+    const path = try daemon.socketPath(allocator);
+    defer allocator.free(path);
+    if (daemon.loadItemsAlloc(allocator, path)) |items| {
+        const panes = try allocator.alloc(model.TmuxPane, 0);
+        return .{ .allocator = allocator, .controller = controller, .panes = panes, .items = items };
+    } else |_| {}
+
     const panes = try controller.listPanes();
     errdefer controller.freePanes(panes);
 
@@ -225,6 +312,9 @@ fn usage(writer: anytype) !void {
         \\
         \\commands:
         \\  snapshot      print current project-grouped agent cockpit
+        \\  daemon --foreground [--socket path]
+        \\  daemon ping|snapshot
+        \\  notify refresh
         \\  sidebar       run sidebar placeholder (libvaxis TUI lands next)
         \\  jump <rank>              jump to ranked cockpit item
         \\  jump-relative next|prev  jump to next/previous ranked item
@@ -233,7 +323,9 @@ fn usage(writer: anytype) !void {
 }
 
 test {
+    _ = daemon;
     _ = discovery;
+    _ = @import("pi_tasks.zig");
     _ = sanitize;
     _ = tmux;
     _ = tui;
