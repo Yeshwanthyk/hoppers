@@ -39,7 +39,7 @@ if [ -n "$hoppers_agent_next_key" ]; then
   tmux bind-key -n "$hoppers_agent_next_key" run-shell -b "$jump_relative_script next >$log_path 2>&1"
 fi
 tmux set-hook -g client-session-changed "run-shell -b \"$start_script notify focus >/dev/null 2>>$log_path; $sidebar_script sync >$log_path 2>&1\""
-tmux set-hook -g pane-exited "run-shell -b \"$start_script notify pane-exited >/dev/null 2>>$log_path\""
+tmux set-hook -g pane-exited "run-shell -b \"$start_script notify pane-exited >/dev/null 2>>$log_path; $sidebar_script pane-exited '#{pane_id}' >/dev/null 2>>$log_path\""
 
 for key in $hoppers_focus_keys; do
   tmux bind-key -n "$key" run-shell -b "$toggle_script >$log_path 2>&1"

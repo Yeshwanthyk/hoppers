@@ -164,9 +164,12 @@ sidebar_case() {
   target_window="$(tmux -L "$SOCK" display-message -p -t "$SESSION":main '#{window_id}')"
   HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/toggle.sh" >"$LOG" 2>&1
   sleep 2
-  local panes sidebar
-  panes="$(tmux -L "$SOCK" list-panes -t "$SESSION":main -F '#{pane_id}|#{pane_title}|#{pane_current_command}|#{pane_start_command}')"
+  local panes sidebar sidebar_pid sidebar_count
+  panes="$(tmux -L "$SOCK" list-panes -t "$SESSION":main -F '#{pane_id}|#{pane_title}|#{pane_current_command}|#{pane_start_command}|#{pane_pid}')"
   sidebar="$(printf '%s\n' "$panes" | awk -F'|' '$2 == "hoppers-sidebar" || ($4 ~ /start\.sh/ && $4 ~ /sidebar/) { print $1; exit }')"
+  sidebar_pid="$(printf '%s\n' "$panes" | awk -F'|' '$2 == "hoppers-sidebar" || ($4 ~ /start\.sh/ && $4 ~ /sidebar/) { print $5; exit }')"
+  sidebar_count="$(tmux -L "$SOCK" list-panes -a -F '#{pane_title}|#{pane_start_command}' | awk -F'|' '$1 == "hoppers-sidebar" || ($2 ~ /start\.sh/ && $2 ~ /sidebar/) { count++ } END { print count + 0 }')"
+  [ "$sidebar_count" = "1" ] && ok 'sidebar singleton global count' || not_ok 'sidebar singleton global count' "count=$sidebar_count" "$panes"
   [ -n "$sidebar" ] && ok 'sidebar opens' || { not_ok 'sidebar opens' "$panes" "$(cat "$LOG" 2>/dev/null || true)"; return; }
   sleep 4
   tmux -L "$SOCK" list-panes -t "$SESSION":main -F '#{pane_id}' | grep -Fq "$sidebar" && ok 'sidebar stays alive' || not_ok 'sidebar stays alive' "$(cat "$LOG" 2>/dev/null || true)"
@@ -184,7 +187,13 @@ sidebar_case() {
   target_window="$(tmux -L "$SOCK" display-message -p -t hoppers-other:main '#{window_id}')"
   HOPPERS_TARGET_WINDOW="$target_window" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" "$ROOT/scripts/sidebar.sh" sync >"$LOG" 2>&1
   sleep 1
-  tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}' | grep -Eq 'hoppers-sidebar|start\.sh.*sidebar' && ok 'sidebar follows session' || not_ok 'sidebar follows session' "$(tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}')" "$(cat "$LOG" 2>/dev/null || true)"
+  local followed_pid followed_count
+  followed_pid="$(tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}|#{pane_pid}' | awk -F'|' '$1 == "hoppers-sidebar" || ($2 ~ /start\.sh/ && $2 ~ /sidebar/) { print $3; exit }')"
+  followed_count="$(tmux -L "$SOCK" list-panes -a -F '#{pane_title}|#{pane_start_command}' | awk -F'|' '$1 == "hoppers-sidebar" || ($2 ~ /start\.sh/ && $2 ~ /sidebar/) { count++ } END { print count + 0 }')"
+  [ -n "$followed_pid" ] && ok 'sidebar follows session' || not_ok 'sidebar follows session' "$(tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}')" "$(cat "$LOG" 2>/dev/null || true)"
+  [ "$followed_pid" = "$sidebar_pid" ] && ok 'sidebar preserves process across follow' || not_ok 'sidebar preserves process across follow' "before=$sidebar_pid after=$followed_pid"
+  [ "$followed_count" = "1" ] && ok 'sidebar no duplicates after follow' || not_ok 'sidebar no duplicates after follow' "count=$followed_count"
+  capture="$(tmux -L "$SOCK" capture-pane -p -t "$(awk -F'|' '$1 == "hoppers-sidebar" || ($2 ~ /start\.sh/ && $2 ~ /sidebar/) { print $3; exit }' < <(tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}|#{pane_id}'))" -S -80)"
   not_contains "$capture" '�' && ok 'sidebar has no replacement chars' || not_ok 'sidebar has no replacement chars' "$capture"
   not_contains "$capture" '^[' && ok 'sidebar has no raw escape text' || not_ok 'sidebar has no raw escape text' "$capture"
 }
