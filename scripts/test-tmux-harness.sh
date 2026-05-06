@@ -174,7 +174,7 @@ sidebar_case() {
   capture="$(tmux -L "$SOCK" capture-pane -p -t "$sidebar" -S -80)"
   not_contains "$capture" 'project cockpit' && ok 'sidebar omits header chrome' || not_ok 'sidebar omits header chrome' "$capture"
   contains "$capture" 'codex' && ok 'sidebar detects codex' || not_ok 'sidebar detects codex' "$capture"
-  contains "$capture" '|>' && ok 'sidebar shows timeline glyphs' || not_ok 'sidebar shows timeline glyphs' "$capture"
+  contains "$capture" 'idle' && not_contains "$capture" '|>' && ok 'sidebar shows idle without active glyphs' || not_ok 'sidebar shows idle without active glyphs' "$capture"
   contains "$capture" '1 pi' && ok 'sidebar shows selection row' || not_ok 'sidebar shows selection row' "$capture"
   contains "$capture" 'enter jump' && ok 'sidebar footer visible' || not_ok 'sidebar footer visible' "$capture"
   contains "$capture" 'shared-project' && not_contains "$capture" 'shared-worktree' && ok 'sidebar groups worktrees by project' || not_ok 'sidebar groups worktrees by project' "$capture"
@@ -187,6 +187,50 @@ sidebar_case() {
   tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}' | grep -Eq 'hoppers-sidebar|start\.sh.*sidebar' && ok 'sidebar follows session' || not_ok 'sidebar follows session' "$(tmux -L "$SOCK" list-panes -t hoppers-other:main -F '#{pane_title}|#{pane_start_command}')" "$(cat "$LOG" 2>/dev/null || true)"
   not_contains "$capture" '�' && ok 'sidebar has no replacement chars' || not_ok 'sidebar has no replacement chars' "$capture"
   not_contains "$capture" '^[' && ok 'sidebar has no raw escape text' || not_ok 'sidebar has no raw escape text' "$capture"
+}
+
+daemon_case() {
+  setup_agents
+  local sock="$TMP/hoppersd.sock"
+  HOPPERSD_SOCKET="$sock" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" $ROOT/scripts/start.sh daemon start
+  local attempt
+  for attempt in {1..50}; do
+    [ -S "$sock" ] && break
+    sleep 0.1
+  done
+  local pong output
+  pong="$(HOPPERSD_SOCKET="$sock" $ROOT/scripts/start.sh daemon ping)"
+  [ "$pong" = 'pong' ] && ok 'daemon ping' || not_ok 'daemon ping' "$pong"
+  output="$(HOPPERSD_SOCKET="$sock" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" $ROOT/scripts/start.sh daemon snapshot)"
+  contains "$output" 'hoppers · project cockpit' && contains "$output" 'claude' && contains "$output" 'codex' && ok 'daemon snapshot includes harness panes' || not_ok 'daemon snapshot includes harness panes' "$output"
+  HOPPERSD_SOCKET="$sock" $ROOT/scripts/start.sh notify refresh && ok 'notify refresh' || not_ok 'notify refresh'
+  HOPPERSD_SOCKET="$sock" $ROOT/scripts/start.sh daemon stop || true
+  output="$(HOPPERSD_SOCKET="$sock" HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" $ROOT/scripts/start.sh snapshot)"
+  not_contains "$output" 'running' && not_contains "$output" 'failed' && not_contains "$output" 'done' && ok 'daemon down fallback does not guess status' || not_ok 'daemon down fallback does not guess status' "$output"
+}
+
+daemon_isolation_case() {
+  start_tmux
+  local path_one path_two
+  path_one="$(HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" $ROOT/scripts/start.sh daemon path)"
+  local sock2="hoppers-test-other-$$"
+  tmux -L "$sock2" -f /dev/null new-session -d -s other -n main -c "$ROOT" 'exec zsh'
+  local tmux_socket2 tmux_env2
+  tmux_socket2="$(tmux -L "$sock2" display-message -p '#{socket_path}')"
+  tmux_env2="$tmux_socket2,0,0"
+  path_two="$(HOPPERS_TMUX_SOCKET="$tmux_socket2" TMUX="$tmux_env2" $ROOT/scripts/start.sh daemon path)"
+  tmux -L "$sock2" kill-server >/dev/null 2>&1 || true
+  [ "$path_one" != "$path_two" ] && ok 'daemon socket path is tmux isolated' || not_ok 'daemon socket path is tmux isolated' "one=$path_one two=$path_two"
+}
+
+raw_text_no_status_case() {
+  setup_agents
+  tmux -L "$SOCK" select-pane -t "$(awk -F= '$1 == "claude" { print $2 }' "$TMP/panes.env")" -T 'running failed done complete error executing waiting ready'
+  tmux -L "$SOCK" send-keys -t "$(awk -F= '$1 == "codex" { print $2 }' "$TMP/panes.env")" 'printf "failed done running\\n"' Enter
+  sleep 1
+  local output
+  output="$(HOPPERS_TMUX_SOCKET="$TMUX_SOCKET" TMUX="$TMUX_ENV" $ROOT/scripts/start.sh snapshot)"
+  not_contains "$output" 'running' && not_contains "$output" 'failed' && not_contains "$output" 'done' && ok 'raw text does not infer active or terminal status' || not_ok 'raw text does not infer active or terminal status' "$output"
 }
 
 jump_case() {
@@ -205,11 +249,14 @@ jump_case() {
 }
 
 case "$CASE" in
-  all) build; snapshot_case; plugin_case; sidebar_case; jump_case ;;
+  all) build; snapshot_case; plugin_case; sidebar_case; daemon_case; daemon_isolation_case; raw_text_no_status_case; jump_case ;;
   build) build ;;
   snapshot) build; snapshot_case ;;
   plugin) plugin_case ;;
   sidebar) build; sidebar_case ;;
+  daemon) build; daemon_case ;;
+  daemon-isolation) build; daemon_isolation_case ;;
+  raw-text-no-status) build; raw_text_no_status_case ;;
   jump) build; jump_case ;;
   *) echo "unknown case: $CASE" >&2; exit 2 ;;
 esac

@@ -116,7 +116,9 @@ fn gitMetadata(allocator: std.mem.Allocator, root: []const u8) !GitMetadata {
     const common_dir = try gitCommonDir(allocator, root);
     allocator.free(metadata.common_dir);
     metadata.common_dir = common_dir;
-    metadata.worktree = common_dir.len > 0 and !std.mem.endsWith(u8, common_dir, "/.git");
+    const primary_git_dir = try std.fs.path.join(allocator, &.{ root, ".git" });
+    defer allocator.free(primary_git_dir);
+    metadata.worktree = common_dir.len > 0 and !std.mem.eql(u8, common_dir, primary_git_dir);
     return metadata;
 }
 

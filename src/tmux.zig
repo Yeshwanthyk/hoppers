@@ -64,7 +64,10 @@ pub const Controller = struct {
             try self.runVoid(&.{ "tmux", "has-session", "-t", session_name });
             return;
         }
-        try self.runVoid(&.{ "tmux", "switch-client", "-t", session_name });
+        self.runVoid(&.{ "tmux", "switch-client", "-t", session_name }) catch |err| switch (err) {
+            error.CommandFailed => try self.runVoid(&.{ "tmux", "has-session", "-t", session_name }),
+            else => return err,
+        };
     }
 
     fn canSwitchClient() bool {
