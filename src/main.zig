@@ -194,7 +194,23 @@ fn loadCockpitWithController(allocator: std.mem.Allocator, controller: tmux.Cont
     return .{ .allocator = allocator, .controller = controller, .panes = panes, .items = items };
 }
 
-fn switchToItem(controller: tmux.Controller, item: model.CockpitItem) !void {
+fn prefollowSidebar(allocator: std.mem.Allocator, item: model.CockpitItem) void {
+    const root = std.posix.getenv("HOPPERS_ROOT") orelse return;
+    const script = std.fs.path.join(allocator, &.{ root, "scripts", "sidebar.sh" }) catch return;
+    defer allocator.free(script);
+    const target_env = std.fmt.allocPrint(allocator, "HOPPERS_TARGET_WINDOW={s}", .{item.agent.window_id}) catch return;
+    defer allocator.free(target_env);
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "env", target_env, script, "follow" },
+        .max_output_bytes = 64 * 1024,
+    }) catch return;
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+}
+
+fn switchToItem(allocator: std.mem.Allocator, controller: tmux.Controller, item: model.CockpitItem) !void {
+    prefollowSidebar(allocator, item);
     try controller.switchSession(item.agent.session_name);
     try controller.selectPane(item.agent.window_id, item.agent.pane_id);
 }
@@ -205,7 +221,7 @@ fn jump(allocator: std.mem.Allocator, rank: usize) !void {
 
     for (cockpit.items) |item| {
         if (item.rank == rank) {
-            try switchToItem(cockpit.controller, item);
+            try switchToItem(allocator, cockpit.controller, item);
             return;
         }
     }
@@ -238,7 +254,7 @@ fn jumpRelative(allocator: std.mem.Allocator, direction: []const u8) !void {
     else
         return error.InvalidDirection;
 
-    try switchToItem(cockpit.controller, items[target_index]);
+    try switchToItem(allocator, cockpit.controller, items[target_index]);
 }
 
 fn jumpProject(allocator: std.mem.Allocator, direction: []const u8) !void {
@@ -261,7 +277,7 @@ fn jumpProject(allocator: std.mem.Allocator, direction: []const u8) !void {
     }
 
     const target_index = findProjectTarget(items, active_project, direction) orelse return error.RankNotFound;
-    try switchToItem(cockpit.controller, items[target_index]);
+    try switchToItem(allocator, cockpit.controller, items[target_index]);
 }
 
 fn findProjectTarget(items: []const model.CockpitItem, active_project: ?[]const u8, direction: []const u8) ?usize {

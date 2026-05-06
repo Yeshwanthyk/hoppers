@@ -25,4 +25,5 @@ if [ "$#" -eq 0 ]; then
   set -- sidebar
 fi
 
+export HOPPERS_ROOT="$ROOT"
 exec "$BIN" "$@"
