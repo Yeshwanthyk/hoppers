@@ -1,8 +1,8 @@
 const std = @import("std");
 const model = @import("model.zig");
+const pi_tasks = @import("pi_tasks.zig");
 const projects = @import("projects.zig");
 const ranking = @import("ranking.zig");
-const tmux = @import("tmux.zig");
 
 pub fn buildCockpit(allocator: std.mem.Allocator, panes: []const model.TmuxPane) ![]model.CockpitItem {
     var items: std.ArrayList(model.CockpitItem) = .empty;
@@ -53,11 +53,16 @@ fn buildCockpitItem(
     errdefer allocator.free(id);
 
     const raw_title = activityTitle(pane);
-    const fallback_title = trimActivityTitle(raw_title, project.name);
-    const captured_title = captureActivity(allocator, pane.pane_id) catch fallback_title;
-    const title = if (captured_title.len > 0) captured_title else fallback_title;
-    const status = inferStatus(title);
-    defer if (title.ptr != fallback_title.ptr and title.ptr != raw_title.ptr) allocator.free(title);
+    var status = paneStatus(pane);
+    var semantic_title: ?[]u8 = null;
+    if (kind == .pi) {
+        if (try pi_tasks.summarizeForProject(allocator, project.root)) |summary| {
+            status = summary.status;
+            semantic_title = summary.title;
+        }
+    }
+    defer if (semantic_title) |title| allocator.free(title);
+    const title = semantic_title orelse trimActivityTitle(raw_title, project.name);
 
     const owned_session_name = try allocator.dupe(u8, pane.session_name);
     errdefer allocator.free(owned_session_name);
@@ -83,31 +88,10 @@ fn buildCockpitItem(
     return .{ .rank = 0, .priority = priority, .project = project, .agent = agent };
 }
 
-fn captureActivity(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
-    const controller = tmux.Controller.init(allocator);
-    const capture = try controller.capturePane(pane_id);
-    defer allocator.free(capture);
-    const line = lastMeaningfulLine(capture) orelse return allocator.dupe(u8, "");
-    return allocator.dupe(u8, line);
-}
-
-fn lastMeaningfulLine(capture: []const u8) ?[]const u8 {
-    var result: ?[]const u8 = null;
-    var lines = std.mem.splitScalar(u8, capture, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0) continue;
-        if (std.mem.startsWith(u8, trimmed, "hoppers")) continue;
-        if (std.mem.indexOf(u8, trimmed, "Session compacted") != null) continue;
-        result = trimmed;
-    }
-    return result;
-}
-
 fn activityTitle(pane: model.TmuxPane) []const u8 {
     if (pane.title.len > 0) return pane.title;
-    if (pane.start_command.len > 0) return pane.start_command;
-    return pane.current_command;
+    if (pane.current_command.len > 0) return pane.current_command;
+    return "";
 }
 
 fn trimActivityTitle(title: []const u8, project_name: []const u8) []const u8 {
@@ -119,16 +103,50 @@ fn trimActivityTitle(title: []const u8, project_name: []const u8) []const u8 {
     return title;
 }
 
-fn inferStatus(title: []const u8) model.AgentStatus {
-    var lower_buf: [256]u8 = undefined;
-    const n = @min(title.len, lower_buf.len);
-    const lower = lower_buf[0..n];
-    for (title[0..n], 0..) |char, i| lower[i] = std.ascii.toLower(char);
-    if (contains(lower, "error") or contains(lower, "failed")) return .failed;
-    if (contains(lower, "complete") or contains(lower, "done")) return .done;
-    if (contains(lower, "ready") or contains(lower, "waiting")) return .waiting;
-    if (contains(lower, "executing") or contains(lower, "running")) return .running;
-    return .running;
+fn paneStatus(pane: model.TmuxPane) model.AgentStatus {
+    _ = pane;
+    return .idle;
+}
+
+test "raw pane text cannot infer active or terminal status" {
+    const pane: model.TmuxPane = .{
+        .session_name = "s",
+        .window_id = "@1",
+        .pane_id = "%1",
+        .pane_pid = 1,
+        .current_command = "running failed done complete error executing waiting ready",
+        .start_command = "failed",
+        .current_path = "/tmp",
+        .title = "running failed done complete error executing waiting ready",
+    };
+
+    try std.testing.expectEqual(model.AgentStatus.idle, paneStatus(pane));
+}
+
+test "activity title ignores captured output and prefers pane metadata" {
+    const titled: model.TmuxPane = .{
+        .session_name = "s",
+        .window_id = "@1",
+        .pane_id = "%1",
+        .pane_pid = 1,
+        .current_command = "codex",
+        .start_command = "claude --dangerously-skip-permissions",
+        .current_path = "/tmp",
+        .title = "semantic title",
+    };
+    const command_only: model.TmuxPane = .{
+        .session_name = "s",
+        .window_id = "@1",
+        .pane_id = "%1",
+        .pane_pid = 1,
+        .current_command = "codex",
+        .start_command = "claude --dangerously-skip-permissions",
+        .current_path = "/tmp",
+        .title = "",
+    };
+
+    try std.testing.expectEqualStrings("semantic title", activityTitle(titled));
+    try std.testing.expectEqualStrings("codex", activityTitle(command_only));
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
